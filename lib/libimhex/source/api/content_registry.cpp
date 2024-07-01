@@ -4,6 +4,7 @@
 #include <hex/helpers/fs.hpp>
 #include <hex/helpers/logger.hpp>
 #include <hex/helpers/auto_reset.hpp>
+#include <hex/helpers/default_paths.hpp>
 
 #include <hex/ui/view.hpp>
 #include <hex/data_processor/node.hpp>
@@ -51,10 +52,14 @@ namespace hex {
                 if (!settings[unlocalizedCategory].contains(unlocalizedName))
                     settings[unlocalizedCategory][unlocalizedName] = defaultValue;
 
+                if (settings[unlocalizedCategory][unlocalizedName].is_null())
+                    settings[unlocalizedCategory][unlocalizedName] = defaultValue;
+
                 return settings[unlocalizedCategory][unlocalizedName];
             }
 
             #if defined(OS_WEB)
+
                 void load() {
                     char *data = (char *) MAIN_THREAD_EM_ASM_INT({
                         let data = localStorage.getItem("config");
@@ -70,7 +75,11 @@ namespace hex {
                     for (const auto &[category, rest] : *impl::s_onChangeCallbacks) {
                         for (const auto &[name, callbacks] : rest) {
                             for (const auto &[id, callback] : callbacks) {
-                                callback(getSetting(category, name, {}));
+                                try {
+                                    callback(getSetting(category, name, {}));
+                                } catch (const std::exception &e) {
+                                    log::error("Failed to load setting [{}/{}]: {}", category, name, e.what());
+                                }
                             }
                         }
                     }
@@ -93,7 +102,7 @@ namespace hex {
 
                 void load() {
                     bool loaded = false;
-                    for (const auto &dir : fs::getDefaultPaths(fs::ImHexPath::Config)) {
+                    for (const auto &dir : paths::Config.read()) {
                         wolv::io::File file(dir / SettingsFile, wolv::io::File::Mode::Read);
 
                         if (file.isValid()) {
@@ -109,14 +118,21 @@ namespace hex {
                     for (const auto &[category, rest] : *impl::s_onChangeCallbacks) {
                         for (const auto &[name, callbacks] : rest) {
                             for (const auto &[id, callback] : callbacks) {
-                                callback(getSetting(category, name, {}));
+                                try {
+                                    callback(getSetting(category, name, {}));
+                                } catch (const std::exception &e) {
+                                    log::error("Failed to load setting [{}/{}]: {}", category, name, e.what());
+                                }
                             }
                         }
                     }
                 }
 
                 void store() {
-                    const auto &settingsData = getSettingsData();
+                    if (!s_settings.isValid())
+                        return;
+
+                    const auto &settingsData = *s_settings;
 
                     // During a crash settings can be empty, causing them to be overwritten.
                     if (settingsData.empty()) {
@@ -127,7 +143,7 @@ namespace hex {
                     if (result.empty()) {
                         return;
                     }
-                    for (const auto &dir : fs::getDefaultPaths(fs::ImHexPath::Config)) {
+                    for (const auto &dir : paths::Config.write()) {
                         wolv::io::File file(dir / SettingsFile, wolv::io::File::Mode::Create);
 
                         if (file.isValid()) {
@@ -138,7 +154,7 @@ namespace hex {
                 }
 
                 void clear() {
-                    for (const auto &dir : fs::getDefaultPaths(fs::ImHexPath::Config)) {
+                    for (const auto &dir : paths::Config.write()) {
                         wolv::io::fs::remove(dir / SettingsFile);
                     }
                 }
@@ -293,6 +309,23 @@ namespace hex {
             }
 
             nlohmann::json SliderFloat::store() {
+                return m_value;
+            }
+
+
+            bool SliderDataSize::draw(const std::string &name) {
+                return ImGuiExt::SliderBytes(name.c_str(), &m_value, m_min, m_max);
+            }
+
+            void SliderDataSize::load(const nlohmann::json &data) {
+                if (data.is_number_integer()) {
+                    m_value = data.get<u64>();
+                } else {
+                    log::warn("Invalid data type loaded from settings for slider!");
+                }
+            }
+
+            nlohmann::json SliderDataSize::store() {
                 return m_value;
             }
 
@@ -563,7 +596,7 @@ namespace hex {
                 );
             }
 
-            runtime.setIncludePaths(fs::getDefaultPaths(fs::ImHexPath::PatternsInclude) | fs::getDefaultPaths(fs::ImHexPath::Patterns));
+            runtime.setIncludePaths(paths::PatternsInclude.read() | paths::Patterns.read());
 
             for (const auto &[ns, name, paramCount, callback, dangerous] : impl::getFunctions()) {
                 if (dangerous)
@@ -788,6 +821,12 @@ namespace hex {
                 return *s_menuItems;
             }
 
+            static AutoReset<std::vector<MenuItem*>> s_toolbarMenuItems;
+            const std::vector<MenuItem*>& getToolbarMenuItems() {
+                return s_toolbarMenuItems;
+            }
+
+
             std::multimap<u32, MenuItem>& getMenuItemsMutable() {
                 return *s_menuItems;
             }
@@ -897,10 +936,34 @@ namespace hex {
                 if (menuItem.unlocalizedNames.back() == unlocalizedName) {
                     menuItem.toolbarIndex = maxIndex + 1;
                     menuItem.icon.color = color;
+                    updateToolbarItems();
+
                     break;
                 }
             }
         }
+
+        struct MenuItemSorter {
+            bool operator()(const auto *a, const auto *b) const {
+                return a->toolbarIndex < b->toolbarIndex;
+            }
+        };
+
+        void updateToolbarItems() {
+            std::set<ContentRegistry::Interface::impl::MenuItem*, MenuItemSorter> menuItems;
+
+            for (auto &[priority, menuItem] : impl::getMenuItemsMutable()) {
+                if (menuItem.toolbarIndex != -1) {
+                    menuItems.insert(&menuItem);
+                }
+            }
+
+            impl::s_toolbarMenuItems->clear();
+            for (auto menuItem : menuItems) {
+                impl::s_toolbarMenuItems->push_back(menuItem);
+            }
+        }
+
 
 
         void addSidebarItem(const std::string &icon, const impl::DrawCallback &function, const impl::EnabledCallback &enabledCallback) {
@@ -950,17 +1013,28 @@ namespace hex {
 
         namespace impl {
 
-            static AutoReset<std::vector<Entry>> s_entries;
-            const std::vector<Entry>& getEntries() {
-                return *s_entries;
+            static AutoReset<std::vector<ExportMenuEntry>> s_exportMenuEntries;
+            const std::vector<ExportMenuEntry>& getExportMenuEntries() {
+                return *s_exportMenuEntries;
+            }
+
+            static AutoReset<std::vector<FindExporterEntry>> s_findExportEntries;
+            const std::vector<FindExporterEntry>& getFindExporterEntries() {
+                return *s_findExportEntries;
             }
 
         }
 
-        void add(const UnlocalizedString &unlocalizedName, const impl::Callback &callback) {
+        void addExportMenuEntry(const UnlocalizedString &unlocalizedName, const impl::Callback &callback) {
             log::debug("Registered new data formatter: {}", unlocalizedName.get());
 
-            impl::s_entries->push_back({ unlocalizedName, callback });
+            impl::s_exportMenuEntries->push_back({ unlocalizedName, callback });
+        }
+
+        void addFindExportFormatter(const UnlocalizedString &unlocalizedName, const std::string fileExtension, const impl::FindExporterCallback &callback) {
+            log::debug("Registered new export formatter: {}", unlocalizedName.get());
+
+            impl::s_findExportEntries->push_back({ unlocalizedName, fileExtension, callback });
         }
 
     }

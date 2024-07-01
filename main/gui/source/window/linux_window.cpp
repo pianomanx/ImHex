@@ -9,6 +9,7 @@
     #include <hex/helpers/utils.hpp>
     #include <hex/helpers/utils_linux.hpp>
     #include <hex/helpers/logger.hpp>
+    #include <hex/helpers/default_paths.hpp>
 
     #include <wolv/utils/core.hpp>
 
@@ -72,11 +73,22 @@ namespace hex {
         }
     }
 
+    void Window::configureGLFW() {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+        glfwWindowHint(GLFW_DECORATED, ImHexApi::System::isBorderlessWindowModeEnabled() ? GL_FALSE : GL_TRUE);
+        glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+
+        #if defined(GLFW_WAYLAND_APP_ID)
+                glfwWindowHintString(GLFW_WAYLAND_APP_ID, "imhex");
+        #endif
+    }
+
     void Window::initNative() {
         log::impl::enableColorPrinting();
 
         // Add plugin library folders to dll search path
-        for (const auto &path : hex::fs::getDefaultPaths(fs::ImHexPath::Libraries))  {
+        for (const auto &path : paths::Libraries.read())  {
             if (std::fs::exists(path))
                 setenv("LD_LIBRARY_PATH", hex::format("{};{}", hex::getEnvironmentVariable("LD_LIBRARY_PATH").value_or(""), path.string().c_str()).c_str(), true);
         }
@@ -121,6 +133,11 @@ namespace hex {
             for (int i = 0; i < count; i++) {
                 EventFileDropped::post(reinterpret_cast<const char8_t *>(paths[i]));
             }
+        });
+
+        glfwSetWindowRefreshCallback(m_window, [](GLFWwindow *window) {
+            auto win = static_cast<Window *>(glfwGetWindowUserPointer(window));
+            win->fullFrame();
         });
 
         if (themeFollowSystem)

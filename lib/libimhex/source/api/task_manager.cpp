@@ -426,6 +426,10 @@ namespace hex {
     void TaskManager::runWhenTasksFinished(const std::function<void()> &function) {
         std::scoped_lock lock(s_tasksFinishedMutex);
 
+        for (const auto &task : s_tasks) {
+            task->interrupt();
+        }
+
         s_tasksFinishedCallbacks.push_back(function);
     }
 
@@ -439,7 +443,7 @@ namespace hex {
             static auto setThreadDescription = reinterpret_cast<SetThreadDescriptionFunc>(
                 reinterpret_cast<uintptr_t>(
                     ::GetProcAddress(
-                        ::GetModuleHandle("Kernel32.dll"),
+                        ::GetModuleHandleW(L"Kernel32.dll"),
                         "SetThreadDescription"
                     )
                 )

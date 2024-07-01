@@ -22,12 +22,15 @@ bool equals(InputIt1 first1, InputIt1 last1, InputIt2 first2, InputIt2 last2, Bi
     return first1 == last1 && first2 == last2;
 }
 
+const int TextEditor::sCursorBlinkInterval = 1200;
+const int TextEditor::sCursorBlinkOnTime = 800;
+
 TextEditor::Palette TextEditor::sPaletteBase = TextEditor::GetDarkPalette();
 
 TextEditor::FindReplaceHandler::FindReplaceHandler() : mWholeWord(false),mFindRegEx(false),mMatchCase(false)  {}
 
 TextEditor::TextEditor()
-    : mLineSpacing(1.0f), mUndoIndex(0), mTabSize(4), mOverwrite(false), mReadOnly(false), mWithinRender(false), mScrollToCursor(false), mScrollToTop(false), mScrollToBottom(false), mTextChanged(false), mColorizerEnabled(true), mTextStart(20.0f), mLeftMargin(10), mTopMargin(0), mCursorPositionChanged(false), mColorRangeMin(0), mColorRangeMax(0), mSelectionMode(SelectionMode::Normal), mCheckComments(true), mLastClick(-1.0f), mHandleKeyboardInputs(true), mHandleMouseInputs(true), mIgnoreImGuiChild(false), mShowWhitespaces(true), mShowCursor(true), mShowLineNumbers(true),mStartTime(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) {
+    : mLineSpacing(1.0f), mUndoIndex(0), mTabSize(4), mOverwrite(false), mReadOnly(false), mWithinRender(false), mScrollToCursor(false), mScrollToTop(false), mScrollToBottom(false), mTextChanged(false), mColorizerEnabled(true), mTextStart(20.0f), mLeftMargin(10), mTopMargin(0), mCursorPositionChanged(false), mColorRangeMin(0), mColorRangeMax(0), mSelectionMode(SelectionMode::Normal), mCheckComments(true), mLastClick(-1.0f), mHandleKeyboardInputs(true), mHandleMouseInputs(true), mIgnoreImGuiChild(false), mShowWhitespaces(true), mShowCursor(true), mShowLineNumbers(true),mStartTime(ImGui::GetTime() * 1000) {
     SetLanguageDefinition(LanguageDefinition::HLSL());
     mLines.push_back(Line());
 }
@@ -606,7 +609,7 @@ ImU32 TextEditor::GetGlyphColor(const Glyph &aGlyph) const {
         return mPalette[(int)PaletteIndex::MultiLineComment];
     if (aGlyph.mDeactivated)
         return mPalette[(int)PaletteIndex::PreprocessorDeactivated];
-    auto const color = mPalette[(int)aGlyph.mColorIndex];
+    const auto color = mPalette[(int)aGlyph.mColorIndex];
     if (aGlyph.mPreprocessor) {
         const auto ppcolor = mPalette[(int)PaletteIndex::Preprocessor];
         const int c0       = ((ppcolor & 0xff) + (color & 0xff)) / 2;
@@ -620,19 +623,24 @@ ImU32 TextEditor::GetGlyphColor(const Glyph &aGlyph) const {
 
 void TextEditor::HandleKeyboardInputs() {
     ImGuiIO &io   = ImGui::GetIO();
+
+    // command => Ctrl
+    // control => Super
+    // option  => Alt
+
     auto shift    = io.KeyShift;
-    auto left     = ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_LeftArrow));
-    auto right    = ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_RightArrow));
-    auto up       = ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_UpArrow));
-    auto down     = ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_DownArrow));
-    auto ctrl     = io.ConfigMacOSXBehaviors ? io.KeyAlt : io.KeyCtrl;
-    auto alt      = io.ConfigMacOSXBehaviors ? io.KeyCtrl : io.KeyAlt;
-    auto home     = io.ConfigMacOSXBehaviors ? io.KeySuper && left : ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Home));
-    auto end      = io.ConfigMacOSXBehaviors ? io.KeySuper && right : ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_End));
-    auto top      = io.ConfigMacOSXBehaviors ? io.KeySuper && up : ctrl && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Home));
-    auto bottom   = io.ConfigMacOSXBehaviors ? io.KeySuper && down : ctrl && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_End));
-    auto pageUp   = io.ConfigMacOSXBehaviors ? ctrl && up : ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp));
-    auto pageDown = io.ConfigMacOSXBehaviors ? ctrl && down : ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown));
+    auto left     = ImGui::IsKeyPressed(ImGuiKey_LeftArrow);
+    auto right    = ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+    auto up       = ImGui::IsKeyPressed(ImGuiKey_UpArrow);
+    auto down     = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+    auto ctrl     = io.KeyCtrl;
+    auto alt      = io.KeyAlt;
+    auto home     = io.ConfigMacOSXBehaviors ? io.KeySuper && left : ImGui::IsKeyPressed(ImGuiKey_Home);
+    auto end      = io.ConfigMacOSXBehaviors ? io.KeySuper && right : ImGui::IsKeyPressed(ImGuiKey_End);
+    auto top      = io.ConfigMacOSXBehaviors ? io.KeySuper && up : ctrl && ImGui::IsKeyPressed(ImGuiKey_Home);
+    auto bottom   = io.ConfigMacOSXBehaviors ? io.KeySuper && down : ctrl && ImGui::IsKeyPressed(ImGuiKey_End);
+    auto pageUp   = io.ConfigMacOSXBehaviors ? ctrl && up : ImGui::IsKeyPressed(ImGuiKey_PageUp);
+    auto pageDown = io.ConfigMacOSXBehaviors ? ctrl && down : ImGui::IsKeyPressed(ImGuiKey_PageDown);
 
     if (ImGui::IsWindowFocused()) {
         if (ImGui::IsWindowHovered())
@@ -642,11 +650,13 @@ void TextEditor::HandleKeyboardInputs() {
         io.WantCaptureKeyboard = true;
         io.WantTextInput       = true;
 
-        if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Z)))
+        bool handledKeyEvent = true;
+
+        if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Z))
             Undo();
-        else if (!IsReadOnly() && !ctrl && !shift && alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Backspace)))
+        else if (!IsReadOnly() && !ctrl && !shift && alt && ImGui::IsKeyPressed(ImGuiKey_Backspace))
             Undo();
-        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Y)))
+        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Y))
             Redo();
         else if (!ctrl && !alt && up)
             MoveUp(1, shift);
@@ -668,43 +678,43 @@ void TextEditor::HandleKeyboardInputs() {
             MoveHome(shift);
         else if (!ctrl && !alt && end)
             MoveEnd(shift);
-        else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Delete)))
+        else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Delete))
             Delete();
-        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Delete))) {
+        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Delete)) {
             auto wordStart = GetCursorPosition();
             MoveRight();
             auto wordEnd = FindWordEnd(GetCursorPosition());
             SetSelection(wordStart, wordEnd);
             Backspace();
         }
-        else if (!IsReadOnly() && !ctrl && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Backspace)))
+        else if (!IsReadOnly() && !ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_Backspace))
             Backspace();
-        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Backspace))) {
+        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
             auto wordEnd = GetCursorPosition();
             MoveLeft();
             auto wordStart = FindWordStart(GetCursorPosition());
             SetSelection(wordStart, wordEnd);
             Backspace();
         }
-        else if (!ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Insert)))
+        else if (!ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
             mOverwrite = !mOverwrite;
-        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Insert)))
+        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
             Copy();
-        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_C)))
+        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_C))
             Copy();
-        else if (!IsReadOnly() && !ctrl && shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Insert)))
+        else if (!IsReadOnly() && !ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
             Paste();
-        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_V)))
+        else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_V))
             Paste();
-        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_X)))
+        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_X))
             Cut();
-        else if (!ctrl && shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Delete)))
+        else if (!ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Delete))
             Cut();
-        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_A)))
+        else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_A))
             SelectAll();
-        else if (!IsReadOnly() && !ctrl && !shift && !alt && (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Enter)) || ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_KeypadEnter))))
+        else if (!IsReadOnly() && !ctrl && !shift && !alt && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))
             EnterCharacter('\n', false);
-        else if (!IsReadOnly() && !ctrl && !alt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Tab)))
+        else if (!IsReadOnly() && !ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_Tab))
             EnterCharacter('\t', shift);
         else if (!ctrl && !alt && !shift && ImGui::IsKeyPressed(ImGuiKey_F3))
             mFindReplaceHandler.FindMatch(this, true);
@@ -716,6 +726,11 @@ void TextEditor::HandleKeyboardInputs() {
             mFindReplaceHandler.SetFindRegEx(this,!mFindReplaceHandler.GetFindRegEx());
         else if (!ctrl && alt && !shift && ImGui::IsKeyPressed(ImGuiKey_W))
             mFindReplaceHandler.SetWholeWord(this,!mFindReplaceHandler.GetWholeWord());
+        else
+            handledKeyEvent = false;
+
+        if (handledKeyEvent)
+            ResetCursorBlinkTime();
 
         if (!IsReadOnly() && !io.InputQueueCharacters.empty()) {
             for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
@@ -754,6 +769,7 @@ void TextEditor::HandleMouseInputs() {
                 }
 
                 mLastClick = -1.0f;
+                ResetCursorBlinkTime();
             }
 
             /*
@@ -771,6 +787,7 @@ void TextEditor::HandleMouseInputs() {
                 }
 
                 mLastClick = (float)ImGui::GetTime();
+                ResetCursorBlinkTime();
             }
 
             /*
@@ -788,6 +805,7 @@ void TextEditor::HandleMouseInputs() {
                     mSelectionMode = SelectionMode::Normal;
                 }
                 SetSelection(mInteractiveStart, mInteractiveEnd, mSelectionMode);
+                ResetCursorBlinkTime();
 
                 mLastClick = (float)ImGui::GetTime();
             }
@@ -796,6 +814,7 @@ void TextEditor::HandleMouseInputs() {
                 io.WantCaptureMouse    = true;
                 mState.mCursorPosition = mInteractiveEnd = ScreenPosToCoordinates(ImGui::GetMousePos());
                 SetSelection(mInteractiveStart, mInteractiveEnd, mSelectionMode);
+                ResetCursorBlinkTime();
             }
         }
     }
@@ -900,10 +919,12 @@ void TextEditor::Render() {
             }
 
             // Draw line number (right aligned)
-            snprintf(buf, 16, "%d  ", lineNo + 1);
+            if (mShowLineNumbers) {
+                snprintf(buf, 16, "%d  ", lineNo + 1);
 
-            auto lineNoWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, buf, nullptr, nullptr).x;
-            drawList->AddText(ImVec2(lineStartScreenPos.x + mTextStart - lineNoWidth, lineStartScreenPos.y), mPalette[(int)PaletteIndex::LineNumber], buf);
+                auto lineNoWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, buf, nullptr, nullptr).x;
+                drawList->AddText(ImVec2(lineStartScreenPos.x + mTextStart - lineNoWidth, lineStartScreenPos.y), mPalette[(int)PaletteIndex::LineNumber], buf);
+            }
 
             // Draw breakpoints
             if (mBreakpoints.count(lineNo + 1) != 0) {
@@ -915,10 +936,8 @@ void TextEditor::Render() {
             }
 
             if (mState.mCursorPosition.mLine == lineNo && mShowCursor) {
-                bool focused = false;
+                bool focused = ImGui::IsWindowFocused();
                 ImGuiViewport *viewport = ImGui::GetWindowViewport();
-                if (viewport->PlatformUserData != NULL && ImGui::GetPlatformIO().Platform_GetWindowFocus(viewport))
-                    focused = ImGui::IsWindowFocused();
 
                 // Highlight the current line (where the cursor is)
                 if (!HasSelection()) {
@@ -929,9 +948,9 @@ void TextEditor::Render() {
 
                 // Render the cursor
                 if (focused) {
-                    auto timeEnd = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                    auto timeEnd = ImGui::GetTime() * 1000;
                     auto elapsed = timeEnd - mStartTime;
-                    if (elapsed > 400) {
+                    if (elapsed > sCursorBlinkOnTime) {
                         float width = 1.0f;
                         auto cindex = GetCharacterIndex(mState.mCursorPosition);
                         float cx    = TextDistanceToLineStart(mState.mCursorPosition);
@@ -951,7 +970,7 @@ void TextEditor::Render() {
                         ImVec2 cstart(textScreenPos.x + cx, lineStartScreenPos.y);
                         ImVec2 cend(textScreenPos.x + cx + width, lineStartScreenPos.y + mCharAdvance.y);
                         drawList->AddRectFilled(cstart, cend, mPalette[(int)PaletteIndex::Cursor]);
-                        if (elapsed > 800)
+                        if (elapsed > sCursorBlinkInterval)
                             mStartTime = timeEnd;
                     }
                 }
@@ -1220,6 +1239,8 @@ void TextEditor::EnterCharacter(ImWchar aChar, bool aShift) {
     UndoRecord u;
 
     u.mBefore = mState;
+
+    ResetCursorBlinkTime();
 
     if (HasSelection()) {
         if (aChar == '\t' && mState.mSelectionStart.mLine != mState.mSelectionEnd.mLine) {
@@ -2134,9 +2155,10 @@ bool TextEditor::FindReplaceHandler::FindNext(TextEditor *editor, bool wrapAroun
                 curPos.mColumn = textLoc - byteIndex;
 
                 auto &line = editor->mLines[curPos.mLine];
-                for (int i = 0; i < line.size(); i++)
+                for (int i = 0; i < line.size(); i++) {
                     if (line[i].mChar == '\t')
                         curPos.mColumn += (editor->mTabSize - 1);
+                }
                 break;
             } else {// just keep adding
                 byteIndex += byteCount;
@@ -2779,6 +2801,10 @@ void TextEditor::EnsureCursorVisible() {
 int TextEditor::GetPageSize() const {
     auto height = ImGui::GetWindowHeight() - 20.0f - mTopMargin;
     return (int)floor(height / mCharAdvance.y);
+}
+
+void TextEditor::ResetCursorBlinkTime() {
+    mStartTime = ImGui::GetTime() * 1000 - sCursorBlinkOnTime;
 }
 
 TextEditor::UndoRecord::UndoRecord(

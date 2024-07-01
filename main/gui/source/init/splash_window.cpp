@@ -44,7 +44,20 @@ namespace hex::init {
         this->initImGui();
         this->loadAssets();
 
-        ImHexApi::System::impl::setGPUVendor(reinterpret_cast<const char *>(glGetString(GL_VENDOR)));
+        {
+            auto glVendor = reinterpret_cast<const char *>(glGetString(GL_VENDOR));
+            auto glRenderer = reinterpret_cast<const char *>(glGetString(GL_RENDERER));
+            auto glVersion = reinterpret_cast<const char *>(glGetString(GL_VERSION));
+            auto glShadingLanguageVersion = reinterpret_cast<const char *>(glGetString(GL_SHADING_LANGUAGE_VERSION));
+
+            log::debug("OpenGL Vendor: '{}'", glVendor);
+            log::debug("OpenGL Renderer: '{}'", glRenderer);
+            log::debug("OpenGL Version: '{}'", glVersion);
+            log::debug("OpenGL Shading Language Version: '{}'", glShadingLanguageVersion);
+
+            ImHexApi::System::impl::setGPUVendor(glVendor);
+            ImHexApi::System::impl::setGLRenderer(glRenderer);
+        }
 
         RequestAddInitTask::subscribe([this](const std::string& name, bool async, const TaskFunction &function){
             m_tasks.push_back(Task{ name, function, async });
@@ -238,7 +251,7 @@ namespace hex::init {
 
 
     FrameResult WindowSplash::fullFrame() {
-        glfwSetWindowSize(m_window, 640_scaled, 400_scaled);
+        glfwSetWindowSize(m_window, 640, 400);
         centerWindow(m_window);
 
         glfwPollEvents();
@@ -248,23 +261,21 @@ namespace hex::init {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        auto scale = ImHexApi::System::getGlobalScale();
-
         // Draw the splash screen background
         auto drawList = ImGui::GetBackgroundDrawList();
         {
 
             // Draw the splash screen background
-            drawList->AddImage(this->splashBackgroundTexture, ImVec2(0, 0), this->splashBackgroundTexture.getSize() * scale);
+            drawList->AddImage(this->m_splashBackgroundTexture, ImVec2(0, 0), this->m_splashBackgroundTexture.getSize());
 
             {
 
                 // Function to highlight a given number of bytes at a position in the splash screen
                 const auto highlightBytes = [&](ImVec2 start, size_t count, ImColor color, float opacity) {
                     // Dimensions and number of bytes that are drawn. Taken from the splash screen image
-                    const auto hexSize = ImVec2(29, 18) * scale;
-                    const auto hexSpacing = ImVec2(17.4, 15) * scale;
-                    const auto hexStart = ImVec2(27, 127) * scale;
+                    const auto hexSize = ImVec2(29, 18);
+                    const auto hexSpacing = ImVec2(17.4, 15);
+                    const auto hexStart = ImVec2(27, 127);
 
                     constexpr auto HexCount = ImVec2(13, 7);
 
@@ -305,17 +316,17 @@ namespace hex::init {
                 };
 
                 // Draw all highlights, slowly fading them in as the init tasks progress
-                for (const auto &highlight : this->highlights)
-                    highlightBytes(highlight.start, highlight.count, highlight.color, this->progressLerp);
+                for (const auto &highlight : this->m_highlights)
+                    highlightBytes(highlight.start, highlight.count, highlight.color, this->m_progressLerp);
             }
 
-            this->progressLerp += (m_progress - this->progressLerp) * 0.1F;
+            this->m_progressLerp += (m_progress - this->m_progressLerp) * 0.1F;
 
             // Draw the splash screen foreground
-            drawList->AddImage(this->splashTextTexture, ImVec2(0, 0), this->splashTextTexture.getSize() * scale);
+            drawList->AddImage(this->m_splashTextTexture, ImVec2(0, 0), this->m_splashTextTexture.getSize());
 
             // Draw the "copyright" notice
-            drawList->AddText(ImVec2(35, 85) * scale, ImColor(0xFF, 0xFF, 0xFF, 0xFF), hex::format("WerWolv\n2020 - {0}", &__DATE__[7]).c_str());
+            drawList->AddText(ImVec2(35, 85), ImColor(0xFF, 0xFF, 0xFF, 0xFF), hex::format("WerWolv\n2020 - {0}", &__DATE__[7]).c_str());
 
             // Draw version information
             // In debug builds, also display the current commit hash and branch
@@ -325,18 +336,18 @@ namespace hex::init {
                 const static auto VersionInfo = hex::format("{0}", ImHexApi::System::getImHexVersion());
             #endif
 
-            drawList->AddText(ImVec2((this->splashBackgroundTexture.getSize().x * scale - ImGui::CalcTextSize(VersionInfo.c_str()).x) / 2, 105 * scale), ImColor(0xFF, 0xFF, 0xFF, 0xFF), VersionInfo.c_str());
+            drawList->AddText(ImVec2((this->m_splashBackgroundTexture.getSize().x - ImGui::CalcTextSize(VersionInfo.c_str()).x) / 2, 105), ImColor(0xFF, 0xFF, 0xFF, 0xFF), VersionInfo.c_str());
         }
 
         // Draw the task progress bar
         {
             std::lock_guard guard(m_progressMutex);
 
-            const auto progressBackgroundStart = ImVec2(99, 357) * scale;
-            const auto progressBackgroundSize = ImVec2(442, 30) * scale;
+            const auto progressBackgroundStart = ImVec2(99, 357);
+            const auto progressBackgroundSize = ImVec2(442, 30);
 
-            const auto progressStart = progressBackgroundStart + ImVec2(0, 20) * scale;
-            const auto progressSize = ImVec2(progressBackgroundSize.x * m_progress, 10 * scale);
+            const auto progressStart = progressBackgroundStart + ImVec2(0, 20);
+            const auto progressSize = ImVec2(progressBackgroundSize.x * m_progress, 10);
 
             // Draw progress bar
             drawList->AddRectFilled(progressStart, progressStart + progressSize, 0xD0FFFFFF);
@@ -344,7 +355,7 @@ namespace hex::init {
             // Draw task names separated by | characters
             if (!m_currTaskNames.empty()) {
                 drawList->PushClipRect(progressBackgroundStart, progressBackgroundStart + progressBackgroundSize, true);
-                drawList->AddText(progressStart + ImVec2(5, -20) * scale, ImColor(0xFF, 0xFF, 0xFF, 0xFF), hex::format("{}", fmt::join(m_currTaskNames, " | ")).c_str());
+                drawList->AddText(progressStart + ImVec2(5, -20), ImColor(0xFF, 0xFF, 0xFF, 0xFF), hex::format("{}", fmt::join(m_currTaskNames, " | ")).c_str());
                 drawList->PopClipRect();
             }
         }
@@ -361,8 +372,8 @@ namespace hex::init {
         glfwSwapBuffers(m_window);
 
         // Check if all background tasks have finished so the splash screen can be closed
-        if (this->tasksSucceeded.wait_for(0s) == std::future_status::ready) {
-            if (this->tasksSucceeded.get()) {
+        if (this->m_tasksSucceeded.wait_for(0s) == std::future_status::ready) {
+            if (this->m_tasksSucceeded.get()) {
                 log::debug("All tasks finished successfully!");
                 return FrameResult::Success;
             } else {
@@ -388,11 +399,16 @@ namespace hex::init {
 
     void WindowSplash::initGLFW() {
         glfwSetErrorCallback([](int errorCode, const char *desc) {
-            if (errorCode == GLFW_PLATFORM_ERROR) {
+            bool isWaylandError = errorCode == GLFW_PLATFORM_ERROR;
+            #if defined(GLFW_FEATURE_UNAVAILABLE)
+                isWaylandError = isWaylandError || (errorCode == GLFW_FEATURE_UNAVAILABLE);
+            #endif
+            isWaylandError = isWaylandError && std::string_view(desc).contains("Wayland");
+
+            if (isWaylandError) {
                 // Ignore error spam caused by Wayland not supporting moving or resizing
                 // windows or querying their position and size.
-                if (std::string_view(desc).contains("Wayland"))
-                    return;
+                return;
             }
 
             lastGlfwError.errorCode = errorCode;
@@ -416,6 +432,10 @@ namespace hex::init {
             glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
         #endif
+
+	#if defined(OS_LINUX) && defined(GLFW_WAYLAND_APP_ID)
+	    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "imhex");
+	#endif
 
         // Make splash screen non-resizable, undecorated and transparent
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
@@ -492,7 +512,7 @@ namespace hex::init {
 
             ImFontConfig cfg;
             cfg.OversampleH = cfg.OversampleV = 1, cfg.PixelSnapH = true;
-            cfg.SizePixels = 13.0_scaled;
+            cfg.SizePixels = ImHexApi::Fonts::DefaultFontSize;
             io.Fonts->AddFontDefault(&cfg);
 
             std::uint8_t *px;
@@ -519,14 +539,13 @@ namespace hex::init {
     void WindowSplash::loadAssets() {
 
         // Load splash screen image from romfs
-        this->splashBackgroundTexture = ImGuiExt::Texture(romfs::get("splash_background.png").span(), ImGuiExt::Texture::Filter::Linear);
-        this->splashTextTexture = ImGuiExt::Texture(romfs::get("splash_text.png").span(), ImGuiExt::Texture::Filter::Linear);
+        this->m_splashBackgroundTexture = ImGuiExt::Texture::fromImage(romfs::get("splash_background.png").span(), ImGuiExt::Texture::Filter::Linear);
+        this->m_splashTextTexture = ImGuiExt::Texture::fromImage(romfs::get("splash_text.png").span(), ImGuiExt::Texture::Filter::Linear);
 
         // If the image couldn't be loaded correctly, something went wrong during the build process
         // Close the application since this would lead to errors later on anyway.
-        if (!this->splashBackgroundTexture.isValid() || !this->splashTextTexture.isValid()) {
-            log::fatal("Could not load splash screen image!");
-            std::exit(EXIT_FAILURE);
+        if (!this->m_splashBackgroundTexture.isValid() || !this->m_splashTextTexture.isValid()) {
+            log::error("Could not load splash screen image!");
         }
 
         std::mt19937 rng(std::random_device{}());
@@ -534,7 +553,7 @@ namespace hex::init {
         u32 lastPos = 0;
         u32 lastCount = 0;
         u32 index = 0;
-        for (auto &highlight : this->highlights) {
+        for (auto &highlight : this->m_highlights) {
             u32 newPos = lastPos + lastCount + (rng() % 35);
             u32 newCount = (rng() % 7) + 3;
             highlight.start.x = float(newPos % 13);
@@ -551,7 +570,7 @@ namespace hex::init {
 
     void WindowSplash::startStartupTasks() {
         // Launch init tasks in the background
-        this->tasksSucceeded = processTasksAsync();
+        this->m_tasksSucceeded = processTasksAsync();
     }
 
     void WindowSplash::exitGLFW() const {

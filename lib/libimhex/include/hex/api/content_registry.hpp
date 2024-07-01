@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <map>
+#include <mutex>
 #include <span>
 #include <string>
 #include <utility>
@@ -98,7 +99,7 @@ namespace hex {
                         bool m_requiresRestart = false;
                         std::function<bool()> m_enabledCallback;
                         std::function<void(Widget&)> m_changedCallback;
-                        std::optional<std::string> m_tooltip;
+                        std::optional<UnlocalizedString> m_tooltip;
                     };
 
                     [[nodiscard]]
@@ -112,7 +113,7 @@ namespace hex {
                     }
 
                     [[nodiscard]]
-                    const std::optional<std::string>& getTooltip() const {
+                    const std::optional<UnlocalizedString>& getTooltip() const {
                         return m_interface.m_tooltip;
                     }
 
@@ -173,6 +174,21 @@ namespace hex {
                 protected:
                     float m_value;
                     float m_min, m_max;
+                };
+
+                class SliderDataSize : public Widget {
+                public:
+                    SliderDataSize(u64 defaultValue, u64 min, u64 max) : m_value(defaultValue), m_min(min), m_max(max) { }
+                    bool draw(const std::string &name) override;
+
+                    void load(const nlohmann::json &data) override;
+                    nlohmann::json store() override;
+
+                    [[nodiscard]] i32 getValue() const { return m_value; }
+
+                protected:
+                    u64 m_value;
+                    u64 m_min, m_max;
                 };
 
                 class ColorPicker : public Widget {
@@ -340,6 +356,8 @@ namespace hex {
             void write(const UnlocalizedString &unlocalizedCategory, const UnlocalizedString &unlocalizedName, const std::common_type_t<T> &value) {
                 impl::getSetting(unlocalizedCategory, unlocalizedName, value) = value;
                 impl::runOnChangeHandlers(unlocalizedCategory, unlocalizedName, value);
+
+                impl::store();
             }
 
             using OnChangeCallback = std::function<void(const SettingsValue &)>;
@@ -756,6 +774,7 @@ namespace hex {
                 const std::multimap<u32, MainMenuItem>& getMainMenuItems();
 
                 const std::multimap<u32, MenuItem>& getMenuItems();
+                const std::vector<MenuItem*>& getToolbarMenuItems();
                 std::multimap<u32, MenuItem>& getMenuItemsMutable();
 
                 const std::vector<DrawCallback>& getWelcomeScreenEntries();
@@ -899,6 +918,11 @@ namespace hex {
             void addMenuItemToToolbar(const UnlocalizedString &unlocalizedName, ImGuiCustomCol color);
 
             /**
+             * @brief Reconstructs the toolbar items list after they have been modified
+             */
+            void updateToolbarItems();
+
+            /**
              * @brief Adds a new sidebar item
              * @param icon The icon to use for the item
              * @param function The function to call to draw the item
@@ -963,12 +987,34 @@ namespace hex {
             namespace impl {
 
                 using Callback = std::function<std::string(prv::Provider *provider, u64 address, size_t size)>;
-                struct Entry {
+                struct ExportMenuEntry {
                     UnlocalizedString unlocalizedName;
                     Callback callback;
                 };
 
-                const std::vector<Entry>& getEntries();
+                struct FindOccurrence {
+                    Region region;
+                    enum class DecodeType { ASCII, Binary, UTF16, Unsigned, Signed, Float, Double } decodeType;
+                    std::endian endian = std::endian::native;
+                    bool selected;
+                };
+
+                using FindExporterCallback = std::function<std::vector<u8>(const std::vector<FindOccurrence>&, std::function<std::string(FindOccurrence)>)>;
+                struct FindExporterEntry {
+                    UnlocalizedString unlocalizedName;
+                    std::string fileExtension;
+                    FindExporterCallback callback;
+                };
+
+                /**
+                 * @brief Retrieves a list of all registered data formatters used by the 'File -> Export' menu
+                 */
+                const std::vector<ExportMenuEntry>& getExportMenuEntries();
+
+                /**
+                 * @brief Retrieves a list of all registered data formatters used in the Results section of the 'Find' view
+                 */
+                const std::vector<FindExporterEntry>& getFindExporterEntries();
 
             }
 
@@ -978,7 +1024,14 @@ namespace hex {
              * @param unlocalizedName The unlocalized name of the formatter
              * @param callback The function to call to format the data
              */
-            void add(const UnlocalizedString &unlocalizedName, const impl::Callback &callback);
+            void addExportMenuEntry(const UnlocalizedString &unlocalizedName, const impl::Callback &callback);
+
+            /**
+             * @brief Adds a new data exporter for Find results
+             * @param unlocalizedName The unlocalized name of the formatter
+             * @param callback The function to call to format the data
+             */
+            void addFindExportFormatter(const UnlocalizedString &unlocalizedName, const std::string fileExtension, const impl::FindExporterCallback &callback);
 
         }
 
@@ -1039,7 +1092,7 @@ namespace hex {
             };
 
             struct MiniMapVisualizer {
-                using Callback = std::function<ImColor(const std::vector<u8>&)>;
+                using Callback = std::function<void(u64, std::span<const u8>, std::vector<ImColor>&)>;
 
                 UnlocalizedString unlocalizedName;
                 Callback callback;

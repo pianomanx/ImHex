@@ -12,14 +12,17 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <lunasvg.h>
+
 #include <set>
 #include <string>
-
+#include <algorithm>
 
 #include <hex/api/imhex_api.hpp>
 
 #include <hex/api/task_manager.hpp>
 #include <hex/api/theme_manager.hpp>
+#include <hex/helpers/logger.hpp>
 
 
 namespace ImGuiExt {
@@ -27,6 +30,32 @@ namespace ImGuiExt {
     using namespace ImGui;
 
     namespace {
+
+        bool isOpenGLExtensionSupported(const char *name) {
+            static std::set<std::string> extensions;
+
+            if (extensions.empty()) {
+                GLint extensionCount = 0;
+                glGetIntegerv(GL_NUM_EXTENSIONS, &extensionCount);
+
+                for (GLint i = 0; i < extensionCount; i++) {
+                    std::string extension = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
+                    extensions.emplace(std::move(extension));
+                }
+            }
+
+            return extensions.contains(name);
+        }
+
+        bool isOpenGLVersionAtLeast(u8 major, u8 minor) {
+            static GLint actualMajor = 0, actualMinor = 0;
+            if (actualMajor == 0 || actualMinor == 0) {
+                glGetIntegerv(GL_MAJOR_VERSION, &actualMajor);
+                glGetIntegerv(GL_MINOR_VERSION, &actualMinor);
+            }
+
+            return actualMajor > major || (actualMajor == major && actualMinor >= minor);
+        }
 
         constexpr auto getGLFilter(Texture::Filter filter) {
             switch (filter) {
@@ -40,74 +69,189 @@ namespace ImGuiExt {
             return GL_NEAREST;
         }
 
+        [[maybe_unused]] GLint getMaxSamples(GLenum target, GLenum format) {
+            GLint maxSamples;
+
+            glGetInternalformativ(target, format, GL_SAMPLES, 1, &maxSamples);
+            return maxSamples;
+        }
+
+        GLuint createTextureFromRGBA8Array(const ImU8 *buffer, int width, int height, Texture::Filter filter) {
+            GLuint texture;
+
+            // Generate texture
+            glGenTextures(1, &texture);
+            glBindTexture(GL_TEXTURE_2D, texture);
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, getGLFilter(filter));
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, getGLFilter(filter));
+
+            #if defined(GL_UNPACK_ROW_LENGTH)
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            #endif
+
+            // Allocate storage for the texture
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+
+            return texture;
+        }
+
+        GLuint createMultisampleTextureFromRGBA8Array(const ImU8 *buffer, int width, int height, Texture::Filter filter) {
+            // Create a regular texture from the RGBA8 array
+            GLuint texture = createTextureFromRGBA8Array(buffer, width, height, filter);
+
+            if (filter == Texture::Filter::Nearest) {
+                return texture;
+            }
+
+            if (!isOpenGLVersionAtLeast(3,2)) {
+                return texture;
+            }
+
+            if (!isOpenGLExtensionSupported("GL_ARB_texture_multisample")) {
+                return texture;
+            }
+
+            #if defined(GL_TEXTURE_2D_MULTISAMPLE)
+                static const auto sampleCount = std::min(static_cast<GLint>(8), getMaxSamples(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8));
+
+                // Generate renderbuffer
+                GLuint renderbuffer;
+                glGenRenderbuffers(1, &renderbuffer);
+                glBindRenderbuffer(GL_RENDERBUFFER, renderbuffer);
+                glRenderbufferStorageMultisample(GL_RENDERBUFFER, sampleCount, GL_DEPTH24_STENCIL8, width, height);
+
+                // Generate framebuffer
+                GLuint framebuffer;
+                glGenFramebuffers(1, &framebuffer);
+                glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+
+                // Unbind framebuffer on exit
+                ON_SCOPE_EXIT {
+                    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                };
+
+                // Attach texture to color attachment 0
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, texture, 0);
+
+                // Attach renderbuffer to depth-stencil attachment
+                glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, renderbuffer);
+
+                // Check framebuffer status
+                if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                    hex::log::error("Driver claims to support texture multisampling but it's not working");
+                    return texture;
+                }
+
+            #endif
+
+            return texture;
+        }
+
     }
     
-    Texture::Texture(const ImU8 *buffer, int size, Filter filter, int width, int height) {
+    Texture Texture::fromImage(const ImU8 *buffer, int size, Filter filter) {
         if (size == 0)
-            return;
+            return {};
 
         unsigned char *imageData = nullptr;
 
-        if (width == 0 || height == 0)
-            imageData = stbi_load_from_memory(buffer, size, &m_width, &m_height, nullptr, 4);
-
-        if (imageData == nullptr) {
-            if (width * height * 4 > size)
-                return;
-
-            imageData = static_cast<unsigned char *>(STBI_MALLOC(size));
-            std::memcpy(imageData, buffer, size);
-            m_width = width;
-            m_height = height;
-        }
+        Texture result;
+        imageData = stbi_load_from_memory(buffer, size, &result.m_width, &result.m_height, nullptr, 4);
         if (imageData == nullptr)
-            return;
+            return {};
 
-        GLuint texture;
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
+        GLuint texture = createMultisampleTextureFromRGBA8Array(imageData, result.m_width, result.m_height, filter);
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, getGLFilter(filter));
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, getGLFilter(filter));
-
-        #if defined(GL_UNPACK_ROW_LENGTH)
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        #endif
-
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_width, m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, imageData);
         STBI_FREE(imageData);
 
-        m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture));
+        result.m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture));
+
+        return result;
     }
 
-    Texture::Texture(std::span<const std::byte> bytes, Filter filter, int width, int height) : Texture(reinterpret_cast<const ImU8*>(bytes.data()), bytes.size(), filter, width, height) { }
+    Texture Texture::fromImage(std::span<const std::byte> buffer, Filter filter) {
+        return Texture::fromImage(reinterpret_cast<const ImU8*>(buffer.data()), buffer.size(), filter);
+    }
 
-    Texture::Texture(const std::fs::path &path, Filter filter) : Texture(reinterpret_cast<const char *>(path.u8string().c_str()), filter) { }
 
-    Texture::Texture(const char *path, Filter filter) {
-        unsigned char *imageData = stbi_load(path, &m_width, &m_height, nullptr, 4);
+    Texture Texture::fromImage(const std::fs::path &path, Filter filter) {
+        return Texture::fromImage(wolv::util::toUTF8String(path).c_str(), filter);
+    }
+
+    Texture Texture::fromImage(const char *path, Filter filter) {
+        Texture result;
+        unsigned char *imageData = stbi_load(path, &result.m_width, &result.m_height, nullptr, 4);
         if (imageData == nullptr)
-            return;
+            return {};
 
-        GLuint texture;
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
+        GLuint texture = createMultisampleTextureFromRGBA8Array(imageData, result.m_width, result.m_height, filter);
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, getGLFilter(filter));
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, getGLFilter(filter));
-
-        #if defined(GL_UNPACK_ROW_LENGTH)
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        #endif
-
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_width, m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, imageData);
         STBI_FREE(imageData);
 
-        m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture));
+        result.m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture));
+
+        return result;
     }
 
-    Texture::Texture(unsigned int texture, int width, int height) : m_textureId(reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture))), m_width(width), m_height(height) {
+    Texture Texture::fromGLTexture(unsigned int glTexture, int width, int height) {
+        Texture texture;
+        texture.m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(glTexture));
+        texture.m_width = width;
+        texture.m_height = height;
 
+        return texture;
+    }
+
+    Texture Texture::fromBitmap(std::span<const std::byte> buffer, int width, int height, Filter filter) {
+        return Texture::fromBitmap(reinterpret_cast<const ImU8*>(buffer.data()), buffer.size(), width, height, filter);
+    }
+
+    Texture Texture::fromBitmap(const ImU8 *buffer, int size, int width, int height, Filter filter) {
+        if (width * height * 4 > size)
+            return {};
+
+        GLuint texture = createMultisampleTextureFromRGBA8Array(buffer, width, height, filter);
+
+        Texture result;
+        result.m_width = width;
+        result.m_height = height;
+        result.m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture));
+
+        return result;
+    }
+
+    Texture Texture::fromSVG(const char *path, int width, int height, Filter filter) {
+        auto document = lunasvg::Document::loadFromFile(path);
+        auto bitmap = document->renderToBitmap(width, height);
+
+        auto texture = createMultisampleTextureFromRGBA8Array(bitmap.data(), bitmap.width(), bitmap.height(), filter);
+
+        Texture result;
+        result.m_width = bitmap.width();
+        result.m_height = bitmap.height();
+        result.m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture));
+
+        return result;
+    }
+
+    Texture Texture::fromSVG(const std::fs::path &path, int width, int height, Filter filter) {
+        return Texture::fromSVG(wolv::util::toUTF8String(path).c_str(), width, height, filter);
+    }
+
+    Texture Texture::fromSVG(std::span<const std::byte> buffer, int width, int height, Filter filter) {
+        auto document = lunasvg::Document::loadFromData(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+        auto bitmap = document->renderToBitmap(width, height);
+        bitmap.convertToRGBA();
+
+        auto texture = createMultisampleTextureFromRGBA8Array(bitmap.data(), bitmap.width(), bitmap.height(), filter);
+
+        Texture result;
+        result.m_width = bitmap.width();
+        result.m_height = bitmap.height();
+        result.m_textureId = reinterpret_cast<ImTextureID>(static_cast<intptr_t>(texture));
+
+        return result;
     }
 
     Texture::Texture(Texture&& other) noexcept {
@@ -138,8 +282,11 @@ namespace ImGuiExt {
         if (m_textureId == nullptr)
             return;
 
-        auto glTextureId = static_cast<GLuint>(reinterpret_cast<intptr_t>(m_textureId));
-        glDeleteTextures(1, &glTextureId);
+        glDeleteTextures(1, reinterpret_cast<GLuint*>(&m_textureId));
+    }
+
+    float GetTextWrapPos() {
+        return GImGui->CurrentWindow->DC.TextWrapPos;
     }
 
     int UpdateStringSizeCallback(ImGuiInputTextCallbackData *data) {
@@ -180,7 +327,10 @@ namespace ImGuiExt {
         PushStyleColor(ImGuiCol_Text, ImU32(col));
 
         Text("%s %s", icon, label);
-        GetWindowDrawList()->AddLine(ImVec2(pos.x, pos.y + size.y), pos + size, ImU32(col));
+
+        if (hovered)
+            GetWindowDrawList()->AddLine(ImVec2(pos.x, pos.y + size.y), pos + size, ImU32(col));
+
         PopStyleColor();
 
         IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags);
@@ -209,7 +359,10 @@ namespace ImGuiExt {
         const ImU32 col = hovered ? GetColorU32(ImGuiCol_ButtonHovered) : GetColorU32(ImGuiCol_ButtonActive);
         PushStyleColor(ImGuiCol_Text, ImU32(col));
         TextEx(label, nullptr, ImGuiTextFlags_NoWidthForLargeClippedText);    // Skip formatting
-        GetWindowDrawList()->AddLine(ImVec2(pos.x, pos.y + size.y), pos + size, ImU32(col));
+
+        if (hovered)
+            GetWindowDrawList()->AddLine(ImVec2(pos.x, pos.y + size.y), pos + size, ImU32(col));
+
         PopStyleColor();
 
         IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags);
@@ -361,26 +514,25 @@ namespace ImGuiExt {
         return pressed;
     }
 
-    void HelpHover(const char *text) {
-        const auto iconColor = GetStyleColorVec4(ImGuiCol_ButtonActive);
-
+    void HelpHover(const char *text, const char *icon, ImU32 iconColor) {
         PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
         PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
-        PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, GetStyle().FramePadding.y));
+        PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+        PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0F);
 
         PushStyleColor(ImGuiCol_Text, iconColor);
-        Button("(?)");
+        Button(icon);
         PopStyleColor();
 
         if (IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            SetNextWindowSizeConstraints(ImVec2(GetTextLineHeight() * 25, 0), ImVec2(GetTextLineHeight() * 25, FLT_MAX));
+            SetNextWindowSizeConstraints(ImVec2(GetTextLineHeight() * 25, 0), ImVec2(GetTextLineHeight() * 35, FLT_MAX));
             BeginTooltip();
             TextFormattedWrapped("{}", text);
             EndTooltip();
         }
 
-        PopStyleVar();
+        PopStyleVar(2);
         PopStyleColor(3);
     }
 
@@ -423,14 +575,30 @@ namespace ImGuiExt {
         ImGuiID hoveredID = GetHoveredID();
 
         bool result = false;
-        if (IsItemHovered() && (currTime - lastMoveTime) >= 0.5 && hoveredID == lastHoveredID) {
+        if (IsItemHovered(ImGuiHoveredFlags_DelayNormal) && (currTime - lastMoveTime) >= 0.5 && hoveredID == lastHoveredID) {
             if (!std::string_view(text).empty()) {
-                BeginTooltip();
-                if (isSeparator)
-                    SeparatorText(text);
+                const auto textWidth = CalcTextSize(text).x;
+
+                const auto maxWidth = 300 * hex::ImHexApi::System::getGlobalScale();
+                const bool wrapping = textWidth > maxWidth;
+
+                if (wrapping)
+                    ImGui::SetNextWindowSizeConstraints(ImVec2(maxWidth, 0), ImVec2(maxWidth, FLT_MAX));
                 else
-                    TextUnformatted(text);
-                EndTooltip();
+                    ImGui::SetNextWindowSize(ImVec2(textWidth + GetStyle().WindowPadding.x * 2, 0));
+
+                if (BeginTooltip()) {
+                    if (isSeparator)
+                        SeparatorText(text);
+                    else {
+                        if (wrapping)
+                            TextFormattedWrapped("{}", text);
+                        else
+                            TextFormatted("{}", text);
+                    }
+
+                    EndTooltip();
+                }
             }
 
             result = true;
@@ -575,7 +743,7 @@ namespace ImGuiExt {
         const ImU32 col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered
                                                                                           : ImGuiCol_Button);
         RenderNavHighlight(bb, id);
-        RenderFrame(bb.Min, bb.Max, col, true, style.FrameRounding);
+        RenderFrame(bb.Min, bb.Max, col, false, style.FrameRounding);
         RenderTextClipped(bb.Min + style.FramePadding, bb.Max - style.FramePadding, label, nullptr, &label_size, style.ButtonTextAlign, &bb);
 
         // Automatically close popups
@@ -600,7 +768,9 @@ namespace ImGuiExt {
 
         ImVec2 pos = window->DC.CursorPos;
 
-        ImVec2 size = CalcItemSize(ImVec2(1, 1) * GetCurrentWindow()->MenuBarHeight(), label_size.x + style.FramePadding.x * 2.0F, label_size.y + style.FramePadding.y * 2.0F);
+        ImVec2 size = CalcItemSize(ImVec2(1, 1) * GetCurrentWindow()->MenuBarHeight, label_size.x + style.FramePadding.x * 2.0F, label_size.y + style.FramePadding.y * 2.0F);
+
+        ImVec2 padding = (size - label_size) / 2;
 
         const ImRect bb(pos, pos + size);
         ItemSize(size, style.FramePadding.y);
@@ -617,7 +787,7 @@ namespace ImGuiExt {
                                                                                                  : ImGuiCol_MenuBarBg);
         RenderNavHighlight(bb, id);
         RenderFrame(bb.Min, bb.Max, col, false, style.FrameRounding);
-        RenderTextClipped(bb.Min + style.FramePadding, bb.Max - style.FramePadding, symbol, nullptr, &label_size, style.ButtonTextAlign, &bb);
+        RenderTextClipped(bb.Min + padding, bb.Max - padding, symbol, nullptr, &size, style.ButtonTextAlign, &bb);
 
         PopStyleColor();
 
@@ -680,19 +850,12 @@ namespace ImGuiExt {
 
         const ImVec2 label_size = CalcTextSize(label, nullptr, true);
         const ImVec2 frame_size = CalcItemSize(ImVec2(0, 0), CalcTextSize(prefix).x, label_size.y + style.FramePadding.y * 2.0F);
-        const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + frame_size);
+        const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(CalcItemWidth(), frame_size.y));
 
         SetCursorPosX(GetCursorPosX() + frame_size.x);
 
         char buf[64];
         DataTypeFormatString(buf, IM_ARRAYSIZE(buf), type, value, format);
-
-        bool value_changed = false;
-        if (InputTextEx(label, nullptr, buf, IM_ARRAYSIZE(buf), ImVec2(CalcItemWidth() - frame_size.x, label_size.y + style.FramePadding.y * 2.0F), flags))
-            value_changed = DataTypeApplyFromText(buf, type, value, format);
-
-        if (value_changed)
-            MarkItemEdited(GImGui->LastItemData.ID);
 
         RenderNavHighlight(frame_bb, id);
         RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
@@ -700,6 +863,19 @@ namespace ImGuiExt {
         PushStyleVar(ImGuiStyleVar_Alpha, 0.6F);
         RenderText(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), prefix);
         PopStyleVar();
+
+        bool value_changed = false;
+        PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0);
+        PushStyleColor(ImGuiCol_FrameBg, 0x00000000);
+        PushStyleColor(ImGuiCol_FrameBgHovered, 0x00000000);
+        PushStyleColor(ImGuiCol_FrameBgActive, 0x00000000);
+        if (InputTextEx(label, nullptr, buf, IM_ARRAYSIZE(buf), ImVec2(CalcItemWidth() - frame_size.x, label_size.y + style.FramePadding.y * 2.0F), flags))
+            value_changed = DataTypeApplyFromText(buf, type, value, format);
+        PopStyleColor(3);
+        PopStyleVar();
+
+        if (value_changed)
+            MarkItemEdited(GImGui->LastItemData.ID);
 
         return value_changed;
     }
@@ -710,6 +886,21 @@ namespace ImGuiExt {
 
     bool InputHexadecimal(const char *label, u64 *value, ImGuiInputTextFlags flags) {
         return InputIntegerPrefix(label, "0x", value, ImGuiDataType_U64, "%llX", flags | ImGuiInputTextFlags_CharsHexadecimal);
+    }
+
+    bool SliderBytes(const char *label, u64 *value, u64 min, u64 max, ImGuiSliderFlags flags) {
+        std::string format;
+        if (*value < 1024) {
+            format = hex::format("{} Bytes", *value);
+        } else if (*value < 1024 * 1024) {
+            format = hex::format("{:.2f} KB", *value / 1024.0);
+        } else if (*value < 1024 * 1024 * 1024) {
+            format = hex::format("{:.2f} MB", *value / (1024.0 * 1024.0));
+        } else {
+            format = hex::format("{:.2f} GB", *value / (1024.0 * 1024.0 * 1024.0));
+        }
+
+        return ImGui::SliderScalar(label, ImGuiDataType_U64, value, &min, &max, format.c_str(), flags | ImGuiSliderFlags_Logarithmic);
     }
 
     void SmallProgressBar(float fraction, float yOffset) {
@@ -983,17 +1174,37 @@ namespace ImGuiExt {
         PopStyleVar();
     }
 
-    void BeginSubWindow(const char *label, ImVec2 size, ImGuiChildFlags flags) {
+    bool BeginSubWindow(const char *label, bool *collapsed, ImVec2 size, ImGuiChildFlags flags) {
         const bool hasMenuBar = !std::string_view(label).empty();
 
+        bool result = false;
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0F);
         if (ImGui::BeginChild(hex::format("{}##SubWindow", label).c_str(), size, ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY | flags, hasMenuBar ? ImGuiWindowFlags_MenuBar : ImGuiWindowFlags_None)) {
+            result = true;
+
             if (hasMenuBar && ImGui::BeginMenuBar()) {
-                ImGui::TextUnformatted(label);
+                if (collapsed == nullptr)
+                    ImGui::TextUnformatted(label);
+                else {
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, ImGui::GetStyle().FramePadding.y));
+                    ImGui::PushStyleColor(ImGuiCol_Button, 0x00);
+                    if (ImGui::Button(label))
+                        *collapsed = !*collapsed;
+                    ImGui::PopStyleColor();
+                    ImGui::PopStyleVar();
+                }
                 ImGui::EndMenuBar();
+            }
+
+            if (collapsed != nullptr && *collapsed) {
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() - (ImGui::GetStyle().FramePadding.y * 2));
+                ImGuiExt::TextFormattedDisabled("...");
+                result = false;
             }
         }
         ImGui::PopStyleVar();
+
+        return result;
     }
 
     void EndSubWindow() {
@@ -1074,9 +1285,9 @@ namespace ImGuiExt {
         window->DrawList->AddRectFilled(knob_bb.Min, knob_bb.Max, GetColorU32(held ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : *v ? ImGuiCol_ButtonActive : ImGuiCol_Button), size.y / 2);
 
         if (*v)
-            window->DrawList->AddCircleFilled(knob_bb.Max - ImVec2(size.y / 2, size.y / 2), (size.y - style.ItemInnerSpacing.y) / 2, GetColorU32(ImGuiCol_Text), 16);
+            window->DrawList->AddCircleFilled(knob_bb.Max - ImVec2(size.y / 2, size.y / 2), (size.y - style.ItemInnerSpacing.y) / 2, GetColorU32(ImGuiCol_ScrollbarGrabActive), 16);
         else
-            window->DrawList->AddCircleFilled(knob_bb.Min + ImVec2(size.y / 2, size.y / 2), (size.y - style.ItemInnerSpacing.y) / 2, GetColorU32(ImGuiCol_Text), 16);
+            window->DrawList->AddCircleFilled(knob_bb.Min + ImVec2(size.y / 2, size.y / 2), (size.y - style.ItemInnerSpacing.y) / 2, GetColorU32(ImGuiCol_ScrollbarGrabActive), 16);
 
         ImVec2 label_pos = ImVec2(knob_bb.Max.x + style.ItemInnerSpacing.x, knob_bb.Min.y + style.FramePadding.y);
         if (g.LogEnabled)
@@ -1092,6 +1303,59 @@ namespace ImGuiExt {
         return ToggleSwitch(label, &v);
     }
 
+    bool PopupTitleBarButton(const char* label, bool p_enabled)
+    {
+        ImGuiContext& g = *GImGui;
+        ImGuiWindow* window = g.CurrentWindow;
+        const ImGuiID id = window->GetID(label);
+        const ImRect title_rect = window->TitleBarRect();
+        const ImVec2 size(g.FontSize, g.FontSize); // Button size matches font size for aesthetic consistency.
+        const ImVec2 pos = window->DC.CursorPos;
+        const ImVec2 max_pos = pos + size;
+        const ImRect bb(pos.x, title_rect.Min.y, max_pos.x, title_rect.Max.y);
+
+        ImGui::PushClipRect(title_rect.Min, title_rect.Max, false);
+
+        // Check for item addition (similar to how clipping is handled in the original button functions).
+        bool is_clipped = !ItemAdd(bb, id);
+        bool hovered, held;
+        bool pressed = ButtonBehavior(bb, id, &hovered, &held, ImGuiButtonFlags_None);
+        if (is_clipped)
+        {
+            ImGui::PopClipRect();
+            return pressed;
+        }
+
+        // const ImU32 bg_col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
+        // window->DrawList->AddCircleFilled(bb.GetCenter(), ImMax(2.0f, g.FontSize * 0.5f + 1.0f), bg_col);
+
+        // Draw the label in the center
+        ImU32 text_col = GetColorU32(p_enabled || hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+        window->DrawList->AddText(bb.GetCenter() - ImVec2(g.FontSize * 0.45F, g.FontSize * 0.5F), text_col, label);
+
+        // Return the button press state
+        ImGui::PopClipRect();
+        return pressed;
+    }
+
+    void PopupTitleBarText(const char* text) {
+        ImGuiContext& g = *GImGui;
+        ImGuiWindow* window = g.CurrentWindow;
+        const ImRect title_rect = window->TitleBarRect();
+        const ImVec2 size(g.FontSize, g.FontSize); // Button size matches font size for aesthetic consistency.
+        const ImVec2 pos = window->DC.CursorPos;
+        const ImVec2 max_pos = pos + size;
+        const ImRect bb(pos.x, title_rect.Min.y, max_pos.x, title_rect.Max.y);
+
+        ImGui::PushClipRect(title_rect.Min, title_rect.Max, false);
+
+        // Draw the label in the center
+        ImU32 text_col = GetColorU32(ImGuiCol_Text);
+        window->DrawList->AddText(bb.GetCenter() - ImVec2(g.FontSize * 0.45F, g.FontSize * 0.5F), text_col, text);
+
+        // Return the button press state
+        ImGui::PopClipRect();
+    }
 }
 
 namespace ImGui {

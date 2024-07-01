@@ -76,7 +76,7 @@ namespace hex::plugin::builtin {
 
                 // Draw banner
                 ImGui::SetCursorPos(scaled({ 25 * bannerSlideIn, 25 }));
-                const auto bannerSize = s_imhexBanner.getSize() / (1.5F * (1.0F / ImHexApi::System::getGlobalScale()));
+                const auto bannerSize = s_imhexBanner.getSize() / (3.0F * (1.0F / ImHexApi::System::getGlobalScale()));
                 ImGui::Image(
                     s_imhexBanner,
                     bannerSize,
@@ -269,8 +269,7 @@ namespace hex::plugin::builtin {
 
                         // Draw telemetry subwindow
                         ImGui::SetCursorPos((windowSize - subWindowSize) / 2);
-                        ImGuiExt::BeginSubWindow("hex.builtin.oobe.server_contact"_lang, subWindowSize, ImGuiChildFlags_AutoResizeY);
-                        {
+                        if (ImGuiExt::BeginSubWindow("hex.builtin.oobe.server_contact"_lang, nullptr, subWindowSize, ImGuiChildFlags_AutoResizeY)) {
                             // Draw telemetry information
                             auto yBegin = ImGui::GetCursorPosY();
                             std::string message = "hex.builtin.oobe.server_contact.text"_lang;
@@ -408,6 +407,8 @@ namespace hex::plugin::builtin {
                 if (backgroundFadeOut >= 1.0F) {
                     if (tutorialEnabled) {
                         TutorialManager::startTutorial("hex.builtin.tutorial.introduction");
+                    } else {
+                        ContentRegistry::Settings::write<bool>("hex.builtin.setting.interface", "hex.builtin.setting.interface.achievement_popup", false);
                     }
 
                     TaskManager::doLater([] {
@@ -441,13 +442,13 @@ namespace hex::plugin::builtin {
             ImHexApi::System::setWindowResizable(false);
 
             const auto imageTheme = ThemeManager::getImageTheme();
-            s_imhexBanner    = ImGuiExt::Texture(romfs::get(hex::format("assets/{}/banner.png", imageTheme)).span<std::byte>());
-            s_compassTexture = ImGuiExt::Texture(romfs::get("assets/common/compass.png").span<std::byte>());
-            s_globeTexture   = ImGuiExt::Texture(romfs::get("assets/common/globe.png").span<std::byte>());
+            s_imhexBanner    = ImGuiExt::Texture::fromSVG(romfs::get(hex::format("assets/{}/banner.svg", imageTheme)).span<std::byte>());
+            s_compassTexture = ImGuiExt::Texture::fromImage(romfs::get("assets/common/compass.png").span<std::byte>());
+            s_globeTexture   = ImGuiExt::Texture::fromImage(romfs::get("assets/common/globe.png").span<std::byte>());
             s_screenshotDescriptions = nlohmann::json::parse(romfs::get("assets/screenshot_descriptions.json").string());
 
             for (const auto &path : romfs::list("assets/screenshots")) {
-                s_screenshots.emplace_back(path.filename(), ImGuiExt::Texture(romfs::get(path).span<std::byte>(), ImGuiExt::Texture::Filter::Linear));
+                s_screenshots.emplace_back(path.filename(), ImGuiExt::Texture::fromImage(romfs::get(path).span<std::byte>(), ImGuiExt::Texture::Filter::Linear));
             }
 
             s_drawEvent = EventFrameBegin::subscribe(drawOutOfBoxExperience);

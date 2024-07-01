@@ -29,6 +29,7 @@ namespace hex {
         void resize(i32 width, i32 height);
 
     private:
+        void configureGLFW();
         void setupNativeWindow();
         void beginNativeWindowFrame();
         void endNativeWindowFrame();
@@ -62,7 +63,8 @@ namespace hex {
 
         ImGuiExt::ImHexCustomData m_imguiCustomData;
 
-        u32 m_searchBarPosition;
+        u32 m_searchBarPosition = 0;
+        bool m_emergencyPopupOpen = false;
     };
 
 }

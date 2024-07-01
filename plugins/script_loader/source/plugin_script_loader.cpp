@@ -1,3 +1,4 @@
+#include <fonts/codicons_font.h>
 #include <hex/plugin.hpp>
 #include <hex/api/content_registry.hpp>
 #include <hex/api/task_manager.hpp>
@@ -15,10 +16,12 @@ using namespace hex;
 using namespace hex::script::loader;
 
 using ScriptLoaders = std::tuple<
-    #if defined(DOTNET_PLUGINS)
+    #if defined(IMHEX_DOTNET_SCRIPT_SUPPORT)
         DotNetLoader
     #endif
 >;
+
+IMHEX_DEFINE_PLUGIN_FEATURES(){ };
 
 namespace {
 
@@ -27,22 +30,34 @@ namespace {
     void loadScript(std::vector<const Script*> &scripts, auto &loader) {
         loader.loadAll();
 
-        for (auto &script : loader.getScripts())
+        for (auto &script : std::as_const(loader).getScripts())
             scripts.emplace_back(&script);
     }
 
     std::vector<const Script*> loadAllScripts() {
-        std::vector<const Script*> plugins;
+        std::vector<const Script*> scripts;
 
         try {
-            std::apply([&plugins](auto&&... args) {
-                (loadScript(plugins, args), ...);
+            std::apply([&scripts](auto&&... args) {
+                (loadScript(scripts, args), ...);
             }, s_loaders);
         } catch (const std::exception &e) {
             log::error("Error when loading scripts: {}", e.what());
         }
 
-        return plugins;
+        {
+            std::vector<hex::Feature> features;
+            for (const auto &script : scripts) {
+                if (!script->background)
+                    continue;
+
+                features.emplace_back(script->name, true);
+            }
+
+            IMHEX_PLUGIN_FEATURES = features;
+        }
+
+        return scripts;
     }
 
     void initializeLoader(u32 &count, auto &loader) {
@@ -74,7 +89,7 @@ namespace {
         hex::ContentRegistry::Interface::addMenuItemSubMenu({ "hex.builtin.menu.extras" }, 5000, [] {
             static bool menuJustOpened = true;
 
-            if (ImGui::BeginMenu("hex.script_loader.menu.run_script"_lang)) {
+            if (ImGui::BeginMenuEx("hex.script_loader.menu.run_script"_lang, ICON_VS_LIBRARY)) {
                 if (menuJustOpened) {
                     menuJustOpened = false;
                     if (!updaterTask.isRunning()) {
@@ -91,9 +106,11 @@ namespace {
                 }
 
                 for (const auto &script : scripts) {
-                    const auto &[name, entryPoint] = *script;
+                    const auto &[name, path, background, entryPoint, loader] = *script;
+                    if (background)
+                        continue;
 
-                    if (ImGui::MenuItem(name.c_str())) {
+                    if (ImGui::MenuItem(name.c_str(), loader->getTypeName().c_str())) {
                         runnerTask = TaskManager::createTask("Running script...", TaskManager::NoProgress, [entryPoint](auto&) {
                             entryPoint();
                         });

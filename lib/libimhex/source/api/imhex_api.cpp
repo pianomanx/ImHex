@@ -14,6 +14,8 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <set>
+#include <algorithm>
 #include <GLFW/glfw3.h>
 
 #if defined(OS_WINDOWS)
@@ -75,7 +77,11 @@ namespace hex {
 
             static AutoReset<std::optional<ProviderRegion>> s_currentSelection;
             void setCurrentSelection(const std::optional<ProviderRegion> &region) {
-                *s_currentSelection = region;
+                if (region == Region::Invalid()) {
+                    clearSelection();
+                } else {
+                    *s_currentSelection = region;
+                }
             }
 
             static PerProvider<std::optional<Region>> s_hoveredRegion;
@@ -178,24 +184,24 @@ namespace hex {
             impl::s_hoveringFunctions->erase(id);
         }
 
-        static u32 tooltipId = 0;
+        static u32 s_tooltipId = 0;
         u32 addTooltip(Region region, std::string value, color_t color) {
-            tooltipId++;
-            impl::s_tooltips->insert({ tooltipId, { region, std::move(value), color } });
+            s_tooltipId++;
+            impl::s_tooltips->insert({ s_tooltipId, { region, std::move(value), color } });
 
-            return tooltipId;
+            return s_tooltipId;
         }
 
         void removeTooltip(u32 id) {
             impl::s_tooltips->erase(id);
         }
 
-        static u32 tooltipFunctionId;
+        static u32 s_tooltipFunctionId;
         u32 addTooltipProvider(TooltipFunction function) {
-            tooltipFunctionId++;
-            impl::s_tooltipFunctions->insert({ tooltipFunctionId, std::move(function) });
+            s_tooltipFunctionId++;
+            impl::s_tooltipFunctions->insert({ s_tooltipFunctionId, std::move(function) });
 
-            return tooltipFunctionId;
+            return s_tooltipFunctionId;
         }
 
         void removeTooltipProvider(u32 id) {
@@ -212,7 +218,7 @@ namespace hex {
         }
 
         void clearSelection() {
-            impl::s_currentSelection.reset();
+            impl::s_currentSelection->reset();
         }
 
         void setSelection(const Region &region, prv::Provider *provider) {
@@ -262,18 +268,20 @@ namespace hex {
 
         static i64 s_currentProvider = -1;
         static AutoReset<std::vector<std::unique_ptr<prv::Provider>>> s_providers;
+        static AutoReset<std::list<std::unique_ptr<prv::Provider>>> s_providersToRemove;
 
         namespace impl {
 
-            static std::vector<prv::Provider*> s_closingProviders;
+            static std::set<prv::Provider*> s_closingProviders;
             void resetClosingProvider() {
                 s_closingProviders.clear();
             }
 
-            const std::vector<prv::Provider*>& getClosingProviders() {
+            std::set<prv::Provider*> getClosingProviders() {
                 return s_closingProviders;
             }
 
+            static std::recursive_mutex s_providerMutex;
         }
 
         prv::Provider *get() {
@@ -293,6 +301,8 @@ namespace hex {
         }
 
         void setCurrentProvider(i64 index) {
+            std::scoped_lock lock(impl::s_providerMutex);
+
             if (TaskManager::getRunningTaskCount() > 0)
                 return;
 
@@ -306,6 +316,8 @@ namespace hex {
         }
 
         void setCurrentProvider(NonNull<prv::Provider*> provider) {
+            std::scoped_lock lock(impl::s_providerMutex);
+
             if (TaskManager::getRunningTaskCount() > 0)
                 return;
 
@@ -326,6 +338,7 @@ namespace hex {
 
         void markDirty() {
             get()->markDirty();
+            EventProviderDirtied::post(get());
         }
 
         void resetDirty() {
@@ -340,6 +353,8 @@ namespace hex {
         }
 
         void add(std::unique_ptr<prv::Provider> &&provider, bool skipLoadInterface, bool select) {
+            std::scoped_lock lock(impl::s_providerMutex);
+
             if (TaskManager::getRunningTaskCount() > 0)
                 return;
 
@@ -354,6 +369,8 @@ namespace hex {
         }
 
         void remove(prv::Provider *provider, bool noQuestions) {
+            std::scoped_lock lock(impl::s_providerMutex);
+
             if (provider == nullptr)
                  return;
 
@@ -361,7 +378,7 @@ namespace hex {
                 return;
 
             if (!noQuestions) {
-                impl::s_closingProviders.push_back(provider);
+                impl::s_closingProviders.insert(provider);
 
                 bool shouldClose = true;
                 EventProviderClosing::post(provider, &shouldClose);
@@ -409,20 +426,37 @@ namespace hex {
                 }
             }
 
-            provider->close();
-            EventProviderClosed::post(provider);
+            static std::mutex eraseMutex;
+
+            // Move provider over to a list of providers to delete
+            eraseMutex.lock();
+            auto removeIt = s_providersToRemove->emplace(s_providersToRemove->end(), std::move(*it));
+            eraseMutex.unlock();
+
+            // Remove left over references from the main provider list
+            s_providers->erase(it);
+            impl::s_closingProviders.erase(provider);
+
+            if (s_currentProvider >= i64(s_providers->size()) && !s_providers->empty())
+                setCurrentProvider(s_providers->size() - 1);
+
+            if (s_providers->empty())
+                EventProviderChanged::post(provider, nullptr);
+
+            EventProviderClosed::post(removeIt->get());
             RequestUpdateWindowTitle::post();
 
-            TaskManager::runWhenTasksFinished([it, provider] {
-                EventProviderDeleted::post(provider);
-                std::erase(impl::s_closingProviders, provider);
+            // Do the destruction of the provider in the background once all tasks have finished
+            TaskManager::runWhenTasksFinished([removeIt] {
+                EventProviderDeleted::post(removeIt->get());
+                TaskManager::createBackgroundTask("Closing Provider", [removeIt](Task &) {
+                    eraseMutex.lock();
+                    auto provider = std::move(*removeIt);
+                    s_providersToRemove->erase(removeIt);
+                    eraseMutex.unlock();
 
-                s_providers->erase(it);
-                if (s_currentProvider >= i64(s_providers->size()))
-                    setCurrentProvider(0);
-
-                if (s_providers->empty())
-                    EventProviderChanged::post(provider, nullptr);
+                    provider->close();
+                });
             });
         }
 
@@ -436,7 +470,6 @@ namespace hex {
     }
 
     namespace ImHexApi::System {
-
 
         namespace impl {
 
@@ -497,6 +530,11 @@ namespace hex {
             static AutoReset<std::string> s_gpuVendor;
             void setGPUVendor(const std::string &vendor) {
                 s_gpuVendor = vendor;
+            }
+
+            static AutoReset<std::string> s_glRenderer;
+            void setGLRenderer(const std::string &renderer) {
+                s_glRenderer = renderer;
             }
 
             static AutoReset<std::map<std::string, std::string>> s_initArguments;
@@ -600,7 +638,7 @@ namespace hex {
         }
 
         void* getLibImHexModuleHandle() {
-            return hex::getContainingModule((void*)&getLibImHexModuleHandle);
+            return hex::getContainingModule(reinterpret_cast<void*>(&getLibImHexModuleHandle));
         }
 
 
@@ -641,6 +679,10 @@ namespace hex {
 
         const std::string &getGPUVendor() {
             return impl::s_gpuVendor;
+        }
+
+        const std::string &getGLRenderer() {
+            return impl::s_glRenderer;
         }
 
         bool isPortableVersion() {
@@ -729,6 +771,25 @@ namespace hex {
             #endif
         }
 
+        std::optional<LinuxDistro> getLinuxDistro() {
+            wolv::io::File file("/etc/os-release", wolv::io::File::Mode::Read);
+            std::string name;
+            std::string version;
+
+            auto fileContent = file.readString();
+            for (const auto &line : wolv::util::splitString(fileContent, "\n")) {
+                if (line.find("PRETTY_NAME=") != std::string::npos) {
+                    name = line.substr(line.find("=") + 1);
+                    std::erase(name, '\"');
+                } else if (line.find("VERSION_ID=") != std::string::npos) {
+                    version = line.substr(line.find("=") + 1);
+                    std::erase(version, '\"');
+                }
+            }
+
+            return { { name, version } };
+        }
+
         std::string getImHexVersion(bool withBuildType) {
             #if defined IMHEX_VERSION
                 if (withBuildType) {
@@ -771,6 +832,10 @@ namespace hex {
             #endif
         }
 
+        bool isNightlyBuild() {
+            return getImHexVersion(false).ends_with("WIP");
+        }
+
         bool updateImHex(UpdateType updateType) {
             // Get the path of the updater executable
             std::fs::path executablePath;
@@ -797,7 +862,7 @@ namespace hex {
 
             EventImHexClosing::subscribe([executablePath, updateTypeString] {
                 hex::executeCommand(
-                        hex::format("{} {}",
+                        hex::format("\"{}\" \"{}\"",
                                     wolv::util::toUTF8String(executablePath),
                                     updateTypeString
                                     )
@@ -876,9 +941,9 @@ namespace hex {
                 s_fontSize = size;
             }
 
-            static AutoReset<std::unique_ptr<ImFontAtlas>> s_fontAtlas;
+            static AutoReset<ImFontAtlas*> s_fontAtlas;
             void setFontAtlas(ImFontAtlas* fontAtlas) {
-                s_fontAtlas = std::unique_ptr<ImFontAtlas>(fontAtlas);
+                s_fontAtlas = fontAtlas;
             }
 
             static ImFont *s_boldFont = nullptr;
@@ -961,7 +1026,7 @@ namespace hex {
         }
 
         ImFontAtlas* getFontAtlas() {
-            return impl::s_fontAtlas->get();
+            return impl::s_fontAtlas;
         }
 
         ImFont* Bold() {

@@ -29,8 +29,6 @@ namespace hex::plugin::builtin {
     }
 
     void PopupFind::draw(ViewHexEditor *editor) {
-        ImGui::TextUnformatted("hex.builtin.view.hex_editor.menu.file.search"_lang);
-
         auto lastMode = *s_searchMode;
         if (ImGui::BeginTabBar("##find_tabs")) {
             if (ImGui::BeginTabItem("hex.builtin.view.hex_editor.search.hex"_lang)) {
@@ -46,6 +44,16 @@ namespace hex::plugin::builtin {
             }
 
             ImGui::EndTabBar();
+        }
+
+        if(ImGuiExt::IconHyperlink(ICON_VS_SEARCH, "hex.builtin.view.hex_editor.search.advanced"_lang)) {
+            TaskManager::doLater([editor] {
+                const auto& view = ContentRegistry::Views::getViewByName("hex.builtin.view.find.name");
+
+                view->getWindowOpenState() = true;
+                ImGui::SetWindowFocus(view->getName().c_str());
+                editor->closePopup();
+            });
         }
 
         if (lastMode != *s_searchMode) {
@@ -203,11 +211,21 @@ namespace hex::plugin::builtin {
     }
 
     std::optional<Region> PopupFind::findByteSequence(const std::vector<u8> &sequence) const {
+        if (sequence.empty())
+            return std::nullopt;
+
         auto provider = ImHexApi::Provider::get();
+        if (provider == nullptr)
+            return std::nullopt;
+
+        const auto providerSize = provider->getActualSize();
+        if (providerSize == 0x00)
+            return std::nullopt;
+
         prv::ProviderReader reader(provider);
 
         auto startAbsolutePosition = provider->getBaseAddress();
-        auto endAbsolutePosition = provider->getBaseAddress() + provider->getActualSize() - 1;
+        auto endAbsolutePosition = provider->getBaseAddress() + providerSize - 1;
 
         constexpr static auto searchFunction = [](const auto &haystackBegin, const auto &haystackEnd,
                                                   const auto &needleBegin, const auto &needleEnd) {
@@ -251,7 +269,7 @@ namespace hex::plugin::builtin {
                 std::endian endian = (endianness == Endianness::Little)
                                      ? std::endian::little
                                      : std::endian::big;
-                value = hex::changeEndianess(value, endian);
+                value = hex::changeEndianness(value, endian);
             }
         };
 
@@ -301,5 +319,9 @@ namespace hex::plugin::builtin {
             default:
                 break;
         }
+    }
+
+    [[nodiscard]] UnlocalizedString PopupFind::getTitle() const {
+        return "hex.builtin.view.hex_editor.menu.file.search";
     }
 }

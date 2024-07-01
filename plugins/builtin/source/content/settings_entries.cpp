@@ -4,6 +4,7 @@
 #include <hex/api/theme_manager.hpp>
 #include <hex/api/shortcut_manager.hpp>
 #include <hex/api/event_manager.hpp>
+#include <hex/api/layout_manager.hpp>
 
 #include <hex/helpers/http_requests.hpp>
 #include <hex/helpers/utils.hpp>
@@ -12,13 +13,16 @@
 #include <hex/ui/imgui_imhex_extensions.h>
 #include <fonts/codicons_font.h>
 
+#include <wolv/literals.hpp>
+#include <wolv/utils/string.hpp>
+
 #include <nlohmann/json.hpp>
 
 #include <utility>
-#include <hex/api/layout_manager.hpp>
-#include <wolv/utils/string.hpp>
 
 namespace hex::plugin::builtin {
+
+    using namespace wolv::literals;
 
     namespace {
 
@@ -91,7 +95,7 @@ namespace hex::plugin::builtin {
             bool draw(const std::string &) override {
                 bool result = false;
 
-                if (!ImGui::BeginListBox("", ImVec2(-40_scaled, 280_scaled))) {
+                if (!ImGui::BeginListBox("##UserFolders", ImVec2(-40_scaled, 280_scaled))) {
                     return false;
                 } else {
                     for (size_t n = 0; n < m_paths.size(); n++) {
@@ -152,7 +156,7 @@ namespace hex::plugin::builtin {
                 std::vector<std::string> pathStrings;
 
                 for (const auto &path : m_paths) {
-                    pathStrings.push_back(wolv::util::toUTF8String(path));
+                    pathStrings.push_back(wolv::io::fs::toNormalizedPathString(path));
                 }
 
                 return pathStrings;
@@ -173,11 +177,19 @@ namespace hex::plugin::builtin {
                         return "x%.1f";
                 }();
 
-                if (ImGui::SliderFloat(name.data(), &m_value, 0, 10, format.c_str(), ImGuiSliderFlags_AlwaysClamp)) {
-                    return true;
+                bool changed = ImGui::SliderFloat(name.data(), &m_value, 0, 4, format.c_str());
+
+                if (m_value < 0)
+                    m_value = 0;
+                else if (m_value > 10)
+                    m_value = 10;
+
+                if (ImHexApi::Fonts::getCustomFontPath().empty() && (u32(m_value * 10) % 10) != 0) {
+                    ImGui::SameLine();
+                    ImGuiExt::HelpHover("hex.builtin.setting.interface.scaling.fractional_warning"_lang, ICON_VS_WARNING, ImGuiExt::GetCustomColorU32(ImGuiCustomCol_ToolbarRed));
                 }
 
-                return false;
+                return changed;
             }
 
             void load(const nlohmann::json &data) override {
@@ -190,7 +202,7 @@ namespace hex::plugin::builtin {
             }
 
         private:
-            float m_value = 0;
+            float m_value = 1.0F;
         };
 
         class AutoBackupWidget : public ContentRegistry::Settings::Widgets::Widget {
@@ -223,7 +235,7 @@ namespace hex::plugin::builtin {
             }
 
         private:
-            int m_value = 0;
+            int m_value = 5 * 2;
         };
 
         class KeybindingWidget : public ContentRegistry::Settings::Widgets::Widget {
@@ -438,8 +450,7 @@ namespace hex::plugin::builtin {
                     ImGui::TableNextColumn();
 
                     // Draw toolbar icon box
-                    ImGuiExt::BeginSubWindow("hex.builtin.setting.toolbar.icons"_lang, ImGui::GetContentRegionAvail());
-                    {
+                    if (ImGuiExt::BeginSubWindow("hex.builtin.setting.toolbar.icons"_lang, nullptr, ImGui::GetContentRegionAvail())) {
                         if (ImGui::BeginTable("##icons", 6, ImGuiTableFlags_SizingStretchSame, ImGui::GetContentRegionAvail())) {
                             ImGui::TableNextRow();
 
@@ -541,6 +552,7 @@ namespace hex::plugin::builtin {
 
                             ImGui::EndTable();
                         }
+
                     }
                     ImGuiExt::EndSubWindow();
 
@@ -558,6 +570,10 @@ namespace hex::plugin::builtin {
                     }
 
                     ImGui::EndTable();
+                }
+
+                if (changed) {
+                    ContentRegistry::Interface::updateToolbarItems();
                 }
 
                 return changed;
@@ -578,12 +594,12 @@ namespace hex::plugin::builtin {
                 if (data.is_null())
                     return;
 
+                for (auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItemsMutable())
+                    menuItem.toolbarIndex = -1;
+
                 auto toolbarItems = data.get<std::map<i32, std::pair<std::string, u32>>>();
                 if (toolbarItems.empty())
                     return;
-
-                for (auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItemsMutable())
-                    menuItem.toolbarIndex = -1;
 
                 for (auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItemsMutable()) {
                     for (const auto &[index, value] : toolbarItems) {
@@ -597,6 +613,8 @@ namespace hex::plugin::builtin {
                 }
 
                 m_currIndex = toolbarItems.size();
+
+                ContentRegistry::Interface::updateToolbarItems();
             }
 
         private:
@@ -605,7 +623,7 @@ namespace hex::plugin::builtin {
 
         class FontFilePicker : public ContentRegistry::Settings::Widgets::FilePicker {
         public:
-            bool draw(const std::string &name) {
+            bool draw(const std::string &name) override {
                 bool changed = false;
 
                 const auto &fonts = hex::getFonts();
@@ -649,22 +667,48 @@ namespace hex::plugin::builtin {
 
 
         bool getDefaultBorderlessWindowMode() {
-            bool result = false;
+            bool result;
 
-            #if defined (OS_WINDOWS) || defined(OS_MACOS)
+            #if defined (OS_WINDOWS)
                 result = true;
-            #endif
 
-            // Intel's OpenGL driver has weird bugs that cause the drawn window to be offset to the bottom right.
-            // This can be fixed by either using Mesa3D's OpenGL Software renderer or by simply disabling it.
-            // If you want to try if it works anyways on your GPU, set the hex.builtin.setting.interface.force_borderless_window_mode setting to 1
-            if (ImHexApi::System::isBorderlessWindowModeEnabled()) {
+                // Intel's OpenGL driver is extremely buggy. Its issues can manifest in lots of different ways
+                // such as "colorful snow" appearing on the screen or, the most annoying issue,
+                // it might draw the window content slightly offset to the bottom right as seen in issue #1625
+
+                // The latter issue can be circumvented by using the native OS decorations or by using the software renderer.
+                // This code here tries to detect if the user has a problematic Intel GPU and if so, it will default to the native OS decorations.
+                // This doesn't actually solve the issue at all but at least it makes ImHex usable on these GPUs.
                 const bool isIntelGPU = hex::containsIgnoreCase(ImHexApi::System::getGPUVendor(), "Intel");
+                if (isIntelGPU) {
+                    log::warn("Intel GPU detected! Intel's OpenGL GPU drivers are extremely buggy and can cause issues when using ImHex. If you experience any rendering bugs, please enable the Native OS Decoration setting or try the software rendererd -NoGPU release.");
 
-                result = !isIntelGPU;
-                if (isIntelGPU)
-                    log::warn("Intel GPU detected! Intel's OpenGL driver has bugs that can cause issues when using ImHex. If you experience any rendering bugs, please try the Mesa3D Software Renderer");
-            }
+                    // Non-exhaustive list of bad GPUs.
+                    // If more GPUs are found to be problematic, they can be added here.
+                    constexpr static std::array BadGPUs = {
+                        // Sandy Bridge Series, Second Gen HD Graphics
+                        "HD Graphics 2000",
+                        "HD Graphics 3000"
+                    };
+
+                    const auto &glRenderer = ImHexApi::System::getGLRenderer();
+                    for (const auto &badGPU : BadGPUs) {
+                        if (hex::containsIgnoreCase(glRenderer, badGPU)) {
+                            result = false;
+                            break;
+                        }
+                    }
+                }
+
+            #elif defined(OS_MACOS)
+                result = true;
+            #elif defined(OS_LINUX)
+                // On Linux, things like Window snapping and moving is hard to implement
+                // without hacking e.g. libdecor, therefor we default to the native window decorations.
+                result = false;
+            #else
+                result = false;
+            #endif
 
             return result;
         }
@@ -680,6 +724,8 @@ namespace hex::plugin::builtin {
             ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "", "hex.builtin.setting.general.show_tips", false);
             ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "", "hex.builtin.setting.general.save_recent_providers", true);
             ContentRegistry::Settings::add<AutoBackupWidget>("hex.builtin.setting.general", "", "hex.builtin.setting.general.auto_backup_time");
+            ContentRegistry::Settings::add<Widgets::SliderDataSize>("hex.builtin.setting.general", "", "hex.builtin.setting.general.max_mem_file_size", 128_MiB, 0_bytes, 32_GiB)
+                .setTooltip("hex.builtin.setting.general.max_mem_file_size.desc");
             ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "hex.builtin.setting.general.patterns", "hex.builtin.setting.general.auto_load_patterns", true);
             ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "hex.builtin.setting.general.patterns", "hex.builtin.setting.general.sync_pattern_source", false);
             ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "hex.builtin.setting.general.network", "hex.builtin.setting.general.network_interface", false);
@@ -851,7 +897,7 @@ namespace hex::plugin::builtin {
             EventImHexStartupFinished::subscribe([]{
                 for (const auto &[name, experiment] : ContentRegistry::Experiments::impl::getExperiments()) {
                     ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.experiments", "", experiment.unlocalizedName, false)
-                        .setTooltip(Lang(experiment.unlocalizedDescription))
+                        .setTooltip(experiment.unlocalizedDescription)
                         .setChangedCallback([name](Widgets::Widget &widget) {
                             auto checkBox = static_cast<Widgets::Checkbox *>(&widget);
 

@@ -14,6 +14,7 @@
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/magic.hpp>
 #include <hex/helpers/binary_pattern.hpp>
+#include <hex/helpers/default_paths.hpp>
 
 #include <hex/providers/memory_provider.hpp>
 
@@ -141,7 +142,7 @@ namespace hex::plugin::builtin {
         for (const auto &file : virtualFiles) {
             const auto &path = file->path;
 
-            auto currSegment = wolv::util::toUTF8String(*std::next(path.begin(), level));
+            auto currSegment = wolv::io::fs::toNormalizedPathString(*std::next(path.begin(), level));
             if (std::distance(path.begin(), path.end()) == ptrdiff_t(level + 1)) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -239,9 +240,9 @@ namespace hex::plugin::builtin {
             if (ImGui::BeginPopup("##pattern_editor_context_menu")) {
                 // no shortcut for this
                 if (ImGui::MenuItem("hex.builtin.menu.file.import.pattern_file"_lang, nullptr, false))
-                    importPatternFile();
+                    m_importPatternFile();
                 if (ImGui::MenuItem("hex.builtin.menu.file.export.pattern_file"_lang, nullptr, false))
-                    exportPatternFile();
+                    m_exportPatternFile();
 
                 ImGui::Separator();
 
@@ -883,7 +884,7 @@ namespace hex::plugin::builtin {
                 ImGui::EndTable();
             }
             // Escape key to close the popup
-            if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Escape), false))
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
                 ImGui::CloseCurrentPopup();
 
             ImGui::EndPopup();
@@ -1038,7 +1039,7 @@ namespace hex::plugin::builtin {
 
                         ImGui::PushItemWidth(-1);
                         if (variable.outVariable) {
-                            ImGui::TextUnformatted(variable.value.toString(true).c_str());
+                            ImGuiExt::TextFormattedSelectable("{}", variable.value.toString(true).c_str());
                         } else if (variable.inVariable) {
                             const std::string label { "##" + name };
 
@@ -1156,7 +1157,10 @@ namespace hex::plugin::builtin {
                                 patternDrawer->draw(patterns, &runtime, 150_scaled);
                         };
                     }
+                    ImGui::SetItemTooltip("%s", "hex.builtin.view.pattern_editor.sections.view"_lang.get().c_str());
+
                     ImGui::SameLine();
+
                     if (ImGuiExt::DimmedIconButton(ICON_VS_SAVE_AS, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
                         fs::openFileBrowser(fs::DialogMode::Save, {}, [id, &runtime](const auto &path) {
                             wolv::io::File file(path, wolv::io::File::Mode::Create);
@@ -1168,6 +1172,7 @@ namespace hex::plugin::builtin {
                             file.writeVector(runtime.getSection(id));
                         });
                     }
+                    ImGui::SetItemTooltip("%s", (const char*)"hex.builtin.view.pattern_editor.sections.export"_lang.get().c_str());
 
                     ImGui::PopID();
                 }
@@ -1324,7 +1329,7 @@ namespace hex::plugin::builtin {
         if (m_shouldAnalyze) {
             m_shouldAnalyze = false;
 
-            TaskManager::createBackgroundTask("Analyzing file content", [this, provider](auto &) {
+            m_analysisTask = TaskManager::createBackgroundTask("Analyzing file content", [this, provider](const Task &task) {
                 if (!m_autoLoadPatterns)
                     return;
 
@@ -1407,9 +1412,12 @@ namespace hex::plugin::builtin {
 
                 m_possiblePatternFiles.get(provider).clear();
 
+                bool popupOpen = false;
                 std::error_code errorCode;
-                for (const auto &dir : fs::getDefaultPaths(fs::ImHexPath::Patterns)) {
+                for (const auto &dir : paths::Patterns.read()) {
                     for (auto &entry : std::fs::recursive_directory_iterator(dir, errorCode)) {
+                        task.update();
+
                         foundCorrectType = false;
                         if (!entry.is_regular_file())
                             continue;
@@ -1423,15 +1431,21 @@ namespace hex::plugin::builtin {
                             log::warn("Failed to preprocess file {} during MIME analysis", entry.path().string());
                         }
 
-                        if (foundCorrectType)
-                            m_possiblePatternFiles.get(provider).push_back(entry.path());
+                        if (foundCorrectType) {
+                            {
+                                std::scoped_lock lock(m_possiblePatternFilesMutex);
+
+                                m_possiblePatternFiles.get(provider).push_back(entry.path());
+                            }
+
+                            if (!popupOpen) {
+                                PopupAcceptPattern::open(this);
+                                popupOpen = true;
+                            }
+                        }
 
                         runtime.reset();
                     }
-                }
-
-                if (!m_possiblePatternFiles.get(provider).empty()) {
-                    PopupAcceptPattern::open(this);
                 }
             });
         }
@@ -1443,7 +1457,7 @@ namespace hex::plugin::builtin {
         {
             ImGui::ColorButton(pattern->getVariableName().c_str(), ImColor(pattern->getColor()));
             ImGui::SameLine(0, 10);
-            ImGuiExt::TextFormattedColored(ImColor(0xFF9BC64D), "{} ", pattern->getFormattedName());
+            ImGuiExt::TextFormattedColored(TextEditor::GetPalette()[u32(TextEditor::PaletteIndex::KnownIdentifier)], "{} ", pattern->getFormattedName());
             ImGui::SameLine(0, 5);
             ImGuiExt::TextFormatted("{}", pattern->getDisplayName());
             ImGui::SameLine();
@@ -1459,34 +1473,75 @@ namespace hex::plugin::builtin {
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
+                    ImGuiExt::TextFormatted("{} ", "hex.ui.common.path"_lang);
+                    ImGui::TableNextColumn();
+
+                    std::string path;
+                    {
+                        std::vector<std::string> pathSegments;
+                        const pl::ptrn::Pattern *entry = pattern;
+                        while (entry != nullptr) {
+                            pathSegments.push_back(entry->getVariableName());
+                            entry = entry->getParent();
+                        }
+
+                        for (const auto &segment : pathSegments | std::views::reverse) {
+                            if (!segment.starts_with('['))
+                                path += '.';
+
+                            path += segment;
+                        }
+
+                        if (path.starts_with('.'))
+                            path = path.substr(1);
+                    }
+
+                    ImGui::Indent();
+                    ImGui::PushTextWrapPos(300_scaled);
+                    ImGuiExt::TextFormattedWrapped("{}", path);
+                    ImGui::PopTextWrapPos();
+                    ImGui::Unindent();
+
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
                     ImGuiExt::TextFormatted("{} ", "hex.ui.common.type"_lang);
                     ImGui::TableNextColumn();
-                    ImGuiExt::TextFormatted(" {}", pattern->getTypeName());
+                    ImGui::Indent();
+                    ImGuiExt::TextFormatted("{}", pattern->getFormattedName());
+                    ImGui::Unindent();
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
                     ImGuiExt::TextFormatted("{} ", "hex.ui.common.address"_lang);
                     ImGui::TableNextColumn();
-                    ImGuiExt::TextFormatted(" 0x{:08X}", pattern->getOffset());
+                    ImGui::Indent();
+                    ImGuiExt::TextFormatted("0x{:08X}", pattern->getOffset());
+                    ImGui::Unindent();
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
                     ImGuiExt::TextFormatted("{} ", "hex.ui.common.size"_lang);
                     ImGui::TableNextColumn();
-                    ImGuiExt::TextFormatted(" {}", hex::toByteString(pattern->getSize()));
+                    ImGui::Indent();
+                    ImGuiExt::TextFormatted("{}", hex::toByteString(pattern->getSize()));
+                    ImGui::Unindent();
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
                     ImGuiExt::TextFormatted("{} ", "hex.ui.common.endian"_lang);
                     ImGui::TableNextColumn();
-                    ImGuiExt::TextFormatted(" {}", pattern->getEndian() == std::endian::little ? "hex.ui.common.little"_lang : "hex.ui.common.big"_lang);
+                    ImGui::Indent();
+                    ImGuiExt::TextFormatted("{}", pattern->getEndian() == std::endian::little ? "hex.ui.common.little"_lang : "hex.ui.common.big"_lang);
+                    ImGui::Unindent();
 
                     if (const auto &comment = pattern->getComment(); !comment.empty()) {
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
                         ImGuiExt::TextFormatted("{} ", "hex.ui.common.comment"_lang);
                         ImGui::TableNextColumn();
-                        ImGui::TextWrapped(" \"%s\"", comment.c_str());
+                        ImGui::Indent();
+                        ImGuiExt::TextFormattedWrapped("\"{}\"", comment);
+                        ImGui::Unindent();
                     }
 
                     ImGui::EndTable();
@@ -1544,6 +1599,8 @@ namespace hex::plugin::builtin {
                     }
                 }
             }
+        } else {
+            patternVariables = std::move(oldPatternVariables);
         }
 
         m_runningParsers -= 1;
@@ -1649,7 +1706,7 @@ namespace hex::plugin::builtin {
 
             m_lastEvaluationResult = runtime.executeString(code, pl::api::Source::DefaultSource, envVars, inVariables);
             if (!m_lastEvaluationResult) {
-                *m_lastEvaluationError = runtime.getError();
+                *m_lastEvaluationError = runtime.getEvalError();
                 *m_lastCompileError    = runtime.getCompileErrors();
             }
 
@@ -1750,11 +1807,11 @@ namespace hex::plugin::builtin {
     void ViewPatternEditor::registerMenuItems() {
         /* Import Pattern */
         ContentRegistry::Interface::addMenuItem({ "hex.builtin.menu.file", "hex.builtin.menu.file.import", "hex.builtin.menu.file.import.pattern" }, ICON_VS_FILE_CODE, 4050, Shortcut::None,
-                                                importPatternFile, ImHexApi::Provider::isValid);
+                                                m_importPatternFile, ImHexApi::Provider::isValid);
 
         /* Export Pattern */
         ContentRegistry::Interface::addMenuItem({ "hex.builtin.menu.file", "hex.builtin.menu.file.export", "hex.builtin.menu.file.export.pattern" }, ICON_VS_FILE_CODE, 7050, Shortcut::None,
-                                                exportPatternFile, [this] {
+                                                m_exportPatternFile, [this] {
                                                     return !wolv::util::trim(m_textEditor.GetText()).empty() && ImHexApi::Provider::isValid();
                                                 }
         );

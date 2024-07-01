@@ -5,6 +5,7 @@ on:
     branches:
       - 'master'
       - 'releases/**'
+      - 'tests/**'
   pull_request:
   workflow_dispatch:
 
@@ -75,7 +76,7 @@ jobs:
           -DIMHEX_REPLACE_DWARF_WITH_PDB=ON                         \
           -DDOTNET_EXECUTABLE="C:/Program Files/dotnet/dotnet.exe"  \
           ..
-    
+
     - name: 🛠️ Build
       run: |
         cd build
@@ -118,6 +119,59 @@ jobs:
         path: |
           build/install/*
 
+  win-plugin-template-test:
+    runs-on: windows-2022
+    name: 🧪 Plugin Template Test
+    defaults:
+      run:
+        shell: msys2 {0}
+    needs: win
+    env:
+      IMHEX_SDK_PATH: "${{ github.workspace }}/out/sdk"
+    steps:
+      - name: 🧰 Checkout ImHex
+        uses: actions/checkout@v4
+        with:
+          path: imhex
+
+      - name: 🟦 Install msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+
+      - name: ⬇️ Install dependencies
+        run: |
+          set -x
+          imhex/dist/get_deps_msys2.sh
+
+      - name: 🧰 Checkout ImHex-Plugin-Template
+        uses: actions/checkout@v4
+        with:
+          repository: WerWolv/ImHex-Plugin-Template
+          submodules: recursive
+          path: template
+
+      - name: ⬇️ Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Windows Portable x86_64
+          path: out
+
+      - name: 🛠️ Build
+        run: |
+          set -x
+          cd template
+          mkdir -p build
+          cd build
+  
+          cmake -G "Ninja"                                          \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}                    \
+          -DIMHEX_USE_DEFAULT_BUILD_SETTINGS=ON                     \
+          -DUSE_SYSTEM_CAPSTONE=ON                                  \
+          ..
+          
+          ninja
+
   # MacOS build
   macos:
     runs-on: macos-12
@@ -152,15 +206,14 @@ jobs:
 
     - name: ⬇️ Install dependencies
       run: |
-        set -x
-        brew reinstall python || brew link --overwrite python
+        brew reinstall python || brew link --overwrite python || true
         brew bundle --no-lock --file dist/Brewfile
         rm -rf /usr/local/Cellar/capstone
 
     - name: ⬇️ Install classic glfw
       if: ${{! matrix.custom_glfw}}
       run: |
-        brew install glfw
+        brew install glfw || true
 
     - name: ⬇️ Install .NET
       uses: actions/setup-dotnet@v4
@@ -173,7 +226,7 @@ jobs:
       with:
         repository: glfw/glfw
         path: glfw
-    
+
     # GLFW custom build (to allow software rendering)
     - name: ⬇️ Patch and install custom glfw
       if: ${{matrix.custom_glfw}}
@@ -213,21 +266,45 @@ jobs:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache                                                      \
           -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache                                                     \
           -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache                                                   \
+          -DCMAKE_INSTALL_PREFIX="./install"                                                        \
           -DIMHEX_PATTERNS_PULL_MASTER=ON                                                           \
           -DIMHEX_COMMIT_HASH_LONG="${GITHUB_SHA}"                                                  \
           -DIMHEX_COMMIT_BRANCH="${GITHUB_REF##*/}"                                                 \
-          -DCPACK_PACKAGE_FILE_NAME="imhex-${{env.IMHEX_VERSION}}-macOS${{matrix.suffix}}-x86_64"   \
           ..
-      
+
     - name: 🛠️ Build
-      run: cd build && ninja package
+      run: cd build && ninja install
+
+    - name: ✒️ Fix Signature
+      run: |
+        set -x
+        cd build/install
+        mv imhex.app ImHex.app
+        codesign --remove-signature ImHex.app
+        codesign --force --deep --sign - ImHex.app
+
+    - name: 📁 Fix permissions
+      run: |
+        set -x
+        cd build/install
+        chmod -R 755 ImHex.app/
+
+    - name: 📦 Create DMG
+      run: |
+        set -x
+        mkdir bundle
+        mv build/install/ImHex.app bundle
+        cd bundle
+        ln -s /Applications Applications
+        cd ..
+        hdiutil create -volname "ImHex" -srcfolder bundle -ov -format UDZO imhex-${{env.IMHEX_VERSION}}-macOS${{matrix.suffix}}-x86_64.dmg
 
     - name: ⬆️ Upload DMG
       uses: actions/upload-artifact@v4
       with:
         if-no-files-found: error
         name: macOS DMG${{matrix.suffix}} x86_64
-        path: build/*.dmg
+        path: ./*.dmg
 
   macos-arm64-build:
     runs-on: ubuntu-22.04
@@ -239,7 +316,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
-    
+
     - name: 📁 Restore docker /cache
       uses: actions/cache@v4
       with:
@@ -295,6 +372,7 @@ jobs:
         run: |
           set -x
           cd out
+          mv imhex.app ImHex.app
           codesign --remove-signature ImHex.app
           codesign --force --deep --sign - ImHex.app
 
@@ -320,17 +398,15 @@ jobs:
           if-no-files-found: error
           name: macOS DMG arm64
           path: ./*.dmg
-  
+
   # Ubuntu build
   ubuntu:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Ubuntu
-            release_num: 22.04
-          - name: Ubuntu
-            release_num: 23.04
+          - release_num: 22.04
+          - release_num: 24.04
 
     name: 🐧 Ubuntu ${{ matrix.release_num }}
     runs-on: ubuntu-latest
@@ -385,9 +461,9 @@ jobs:
             -DIMHEX_USE_GTK_FILE_PICKER=ON                            \
             -DDOTNET_EXECUTABLE="dotnet"                              \
             ..
-      
+
       - name: 🛠️ Build
-        run: cd build && DESTDIR=DebDir ninja install 
+        run: cd build && DESTDIR=DebDir ninja install
 
       - name: 📜 Set version variable
         run: |
@@ -422,7 +498,7 @@ jobs:
           path: cache
           key: appimage-ccache-${{ github.run_id }}
           restore-keys: appimage-cache
-      
+
       - name: 🐳 Inject /cache into docker
         uses: reproducible-containers/buildkit-cache-dance@v2
         with:
@@ -508,9 +584,9 @@ jobs:
           -DIMHEX_ENABLE_LTO=ON                         \
           -DIMHEX_USE_GTK_FILE_PICKER=ON                \
           ..
-      
+
       - name: 🛠️ Build
-        run: cd build && DESTDIR=installDir ninja install 
+        run: cd build && DESTDIR=installDir ninja install
 
       - name: 📜 Set version variable
         run: |
@@ -559,13 +635,13 @@ jobs:
             release_num: rawhide
             mock_config: fedora-rawhide
           - name: Fedora
+            mock_release: f40
+            release_num: 40
+            mock_config: fedora-40
+          - name: Fedora
             mock_release: f39
             release_num: 39
             mock_config: fedora-39
-          - name: Fedora
-            mock_release: f38
-            release_num: 38
-            mock_config: fedora-38
           - name: RHEL-AlmaLinux
             mock_release: epel9
             release_num: 9
@@ -649,14 +725,6 @@ jobs:
           config_opts['plugin_conf']['ccache_opts']['compress'] = True
           config_opts['plugin_conf']['ccache_opts']['dir'] = "$GITHUB_WORKSPACE/.ccache"
           EOT
-
-      - name: 📜 Setup Mock Cache
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/mock
-          key: ${{ matrix.mock_release }}-mock-${{ github.run_id }}
-          restore-keys: |
-            ${{ matrix.mock_release }}-mock
 
       # Fedora cmake build (in imhex.spec)
       - name: 📦 Build RPM

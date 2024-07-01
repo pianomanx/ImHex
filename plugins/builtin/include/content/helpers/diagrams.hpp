@@ -129,7 +129,7 @@ namespace hex {
                         pixel = ImAlphaBlendColors(pixel, ImColor(color));
                     }
 
-                    m_texture = ImGuiExt::Texture(reinterpret_cast<u8*>(pixels.data()), pixels.size() * 4, m_filter, 0xFF, 0xFF);
+                    m_texture = ImGuiExt::Texture::fromBitmap(reinterpret_cast<u8*>(pixels.data()), pixels.size() * 4, 0xFF, 0xFF, m_filter);
                     m_textureValid = m_texture.isValid();
                 }
             }
@@ -252,7 +252,7 @@ namespace hex {
                         pixel = ImAlphaBlendColors(pixel, ImColor(color));
                     }
 
-                    m_texture = ImGuiExt::Texture(reinterpret_cast<u8*>(pixels.data()), pixels.size() * 4, m_filter, 0xFF, 0xFF);
+                    m_texture = ImGuiExt::Texture::fromBitmap(reinterpret_cast<u8*>(pixels.data()), pixels.size() * 4, 0xFF, 0xFF, m_filter);
                     m_textureValid = m_texture.isValid();
                 }
             }
@@ -904,6 +904,8 @@ namespace hex {
 
             // Set the diagram handle position to the start of the plot
             m_handlePosition = m_startAddress;
+
+            m_annotationRegions.clear();
         }
 
         // Process one byte at the time

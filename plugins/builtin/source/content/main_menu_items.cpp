@@ -8,6 +8,7 @@
 #include <hex/api/project_file_manager.hpp>
 #include <hex/api/layout_manager.hpp>
 #include <hex/api/achievement_manager.hpp>
+#include <hex/api/tutorial_manager.hpp>
 
 #include <hex/helpers/crypto.hpp>
 #include <hex/helpers/patches.hpp>
@@ -198,8 +199,8 @@ namespace hex::plugin::builtin {
                     std::vector<u8> bytes(5_MiB);
 
                     auto selection = ImHexApi::HexEditor::getSelection();
-                    for (u64 address = selection->getStartAddress(); address < selection->getEndAddress(); address += bytes.size()) {
-                        bytes.resize(std::min<u64>(bytes.size(), selection->getEndAddress() - address));
+                    for (u64 address = selection->getStartAddress(); address <= selection->getEndAddress(); address += bytes.size()) {
+                        bytes.resize(std::min<u64>(bytes.size(), selection->getEndAddress() - address + 1));
                         provider->read(address, bytes.data(), bytes.size());
 
                         outputFile.writeVector(bytes);
@@ -210,7 +211,7 @@ namespace hex::plugin::builtin {
         }
 
         void drawExportLanguageMenu() {
-            for (const auto &formatter : ContentRegistry::DataFormatter::impl::getEntries()) {
+            for (const auto &formatter : ContentRegistry::DataFormatter::impl::getExportMenuEntries()) {
                 if (ImGui::MenuItem(Lang(formatter.unlocalizedName), nullptr, false, ImHexApi::Provider::get()->getActualSize() > 0)) {
                     fs::openFileBrowser(fs::DialogMode::Save, {}, [&formatter](const auto &path) {
                         TaskManager::createTask("Exporting data", TaskManager::NoProgress, [&formatter, path](auto&){
@@ -575,9 +576,9 @@ namespace hex::plugin::builtin {
 
         ContentRegistry::Interface::addMenuItemSubMenu({ "hex.builtin.menu.workspace", "hex.builtin.menu.workspace.layout" }, ICON_VS_LAYOUT, 1150, [] {
             bool locked = LayoutManager::isLayoutLocked();
-            if (ImGui::MenuItemEx("hex.builtin.menu.workspace.layout.lock"_lang, locked ? ICON_VS_UNLOCK : ICON_VS_LOCK, nullptr, locked, ImHexApi::Provider::isValid())) {
-                LayoutManager::lockLayout(locked);
-                ContentRegistry::Settings::write<bool>("hex.builtin.setting.interface", "hex.builtin.setting.interface.layout_locked", locked);
+            if (ImGui::MenuItemEx("hex.builtin.menu.workspace.layout.lock"_lang, ICON_VS_LOCK, nullptr, locked, ImHexApi::Provider::isValid())) {
+                LayoutManager::lockLayout(!locked);
+                ContentRegistry::Settings::write<bool>("hex.builtin.setting.interface", "hex.builtin.setting.interface.layout_locked", !locked);
             }
         });
 
@@ -643,6 +644,12 @@ namespace hex::plugin::builtin {
 
     static void createHelpMenu() {
         ContentRegistry::Interface::registerMainMenuItem("hex.builtin.menu.help", 6000);
+
+        ContentRegistry::Interface::addMenuItem({ "hex.builtin.menu.help", "Interactive Help"}, 10000, Shortcut::None, []{
+            TutorialManager::startHelpHover();
+        });
+
+        TutorialManager::addInteractiveHelpLink({ View::toWindowName("hex.builtin.view.pattern_data.name") }, "https://google.com");
     }
 
 

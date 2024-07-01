@@ -36,7 +36,7 @@ namespace hex::plugin::builtin {
             ImGui::BringWindowToFocusFront(ImGui::GetCurrentWindowRead());
 
             // Close the popup if the user presses ESC
-            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
+            if (ImGui::IsKeyDown(ImGuiKey_Escape))
                 ImGui::CloseCurrentPopup();
 
 
@@ -55,6 +55,7 @@ namespace hex::plugin::builtin {
             if (ImGui::InputText("##command_input", m_commandBuffer)) {
                 m_lastResults = this->getCommandResults(m_commandBuffer);
             }
+            ImGui::SetItemKeyOwner(ImGuiKey_LeftAlt, ImGuiInputFlags_CondActive);
 
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(3);
@@ -102,7 +103,7 @@ namespace hex::plugin::builtin {
             ImGui::Separator();
 
             // Draw the results
-            if (ImGui::BeginChild("##results", ImGui::GetContentRegionAvail(), false, ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_NavFlattened)) {
+            if (ImGui::BeginChild("##results", ImGui::GetContentRegionAvail(), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
                 for (const auto &[displayResult, matchedCommand, callback] : m_lastResults) {
                     ImGui::PushTabStop(true);
                     ON_SCOPE_EXIT { ImGui::PopTabStop(); };
