@@ -343,6 +343,11 @@ public:
     }
     void SetOverwrite(bool aValue) { mOverwrite = aValue; }
 
+    std::string ReplaceStrings(std::string string, const std::string &search, const std::string &replace);
+    std::vector<std::string> SplitString(const std::string &string, const std::string &delimiter, bool removeEmpty);
+    std::string ReplaceTabsWithSpaces(const std::string& string, uint32_t tabSize);
+    std::string PreprocessText(const std::string &code);
+
 	void SetReadOnly(bool aValue);
 	bool IsReadOnly() const { return mReadOnly; }
 	bool IsTextChanged() const { return mTextChanged; }
@@ -554,6 +559,7 @@ private:
 	int GetCharacterColumn(int aLine, int aIndex) const;
 	int GetLineCharacterCount(int aLine) const;
     int Utf8CharsToBytes(const Coordinates &aCoordinates) const;
+    int GetLongestLineLength() const;
     unsigned long long GetLineByteCount(int aLine) const;
 	int GetStringCharacterCount(std::string str) const;
 	int GetLineMaxColumn(int aLine) const;
@@ -590,6 +596,7 @@ private:
 	bool mScrollToTop;
 	bool mTextChanged;
 	bool mColorizerEnabled;
+    float mLongest;
 	float mTextStart;                   // position (in pixels) where a code line starts relative to the left of the TextEditor.
 	int  mLeftMargin;
 	bool mCursorPositionChanged;

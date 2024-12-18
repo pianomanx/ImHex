@@ -283,7 +283,7 @@ namespace hex::plugin::builtin {
 
                 bool settingChanged = false;
 
-                ImGui::BeginDisabled(m_drawShortcut.match(m_defaultShortcut));
+                ImGui::BeginDisabled(m_drawShortcut.matches(m_defaultShortcut));
                 if (ImGuiExt::IconButton(ICON_VS_X, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
                     m_hasDuplicate = !ShortcutManager::updateShortcut(m_shortcut, m_defaultShortcut, m_view);
 
@@ -835,6 +835,12 @@ namespace hex::plugin::builtin {
 
             ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.pattern_parent_highlighting", true);
 
+            std::vector<std::string> pasteBehaviourNames = { "Ask me next time", "Paste everything", "Paste over selection" };
+            std::vector<nlohmann::json> pasteBehaviourValues = { "none", "everything", "selection" };
+            ContentRegistry::Settings::add<Widgets::DropDown>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.paste_behaviour",
+                                                              pasteBehaviourNames,
+                                                              pasteBehaviourValues,
+                                                              "none");
         }
 
         /* Fonts */
