@@ -846,6 +846,20 @@ void TextEditor::HandleMouseInputs() {
     }
 }
 
+int TextEditor::GetLongestLineLength() const {
+    int result = 0;
+    for (int i = 0; i < (int)mLines.size(); i++)
+        result = std::max(result, GetLineCharacterCount(i));
+    return result;
+}
+
+inline void TextUnformattedColoredAt(const ImVec2 &pos, const ImU32 &color, const char *text) {
+    ImGui::SetCursorScreenPos(pos);
+    ImGui::PushStyleColor(ImGuiCol_Text,color);
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+}
+
 void TextEditor::Render() {
     /* Compute mCharAdvance regarding scaled font size (Ctrl + mouse wheel)*/
     const float fontSize = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, "#", nullptr, nullptr).x;
@@ -881,6 +895,7 @@ void TextEditor::Render() {
     auto lineNo        = (int)(std::floor(scrollY / mCharAdvance.y));
     auto globalLineMax = (int)mLines.size();
     auto lineMax       = std::max(0, std::min((int)mLines.size() - 1, lineNo + (int)std::ceil((scrollY + contentSize.y) / mCharAdvance.y)));
+    mLongest = GetLongestLineLength() * mCharAdvance.x;
 
     // Deduce mTextStart by evaluating mLines size (global lineMax) plus two spaces as text width
     char buf[16];
@@ -930,7 +945,7 @@ void TextEditor::Render() {
                 snprintf(buf, 16, "%d  ", lineNo + 1);
 
                 auto lineNoWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, buf, nullptr, nullptr).x;
-                drawList->AddText(ImVec2(lineStartScreenPos.x + mTextStart - lineNoWidth, lineStartScreenPos.y), mPalette[(int)PaletteIndex::LineNumber], buf);
+                TextUnformattedColoredAt(ImVec2(lineStartScreenPos.x + mTextStart - lineNoWidth, lineStartScreenPos.y),mPalette[(int) PaletteIndex::LineNumber],buf);
             }
 
             // Draw breakpoints
@@ -1040,7 +1055,7 @@ void TextEditor::Render() {
 
                 if ((color != prevColor || glyph.mChar == '\t' || glyph.mChar == ' ') && !mLineBuffer.empty()) {
                     const ImVec2 newOffset(textScreenPos.x + bufferOffset.x, textScreenPos.y + bufferOffset.y);
-                    drawList->AddText(newOffset, prevColor, mLineBuffer.c_str());
+                    TextUnformattedColoredAt(newOffset, prevColor, mLineBuffer.c_str());
                     auto textSize = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, mLineBuffer.c_str(), nullptr, nullptr);
                     bufferOffset.x += textSize.x;
                     mLineBuffer.clear();
@@ -1112,7 +1127,7 @@ void TextEditor::Render() {
 
             if (!mLineBuffer.empty()) {
                 const ImVec2 newOffset(textScreenPos.x + bufferOffset.x, textScreenPos.y + bufferOffset.y);
-                drawList->AddText(newOffset, prevColor, mLineBuffer.c_str());
+                TextUnformattedColoredAt(newOffset, prevColor, mLineBuffer.c_str());
                 mLineBuffer.clear();
             }
 
@@ -1123,7 +1138,7 @@ void TextEditor::Render() {
 
     }
 
-    ImGui::Dummy(ImVec2((longest + 2), mLines.size() * mCharAdvance.y));
+    ImGui::Dummy(ImVec2(mLongest, (globalLineMax - lineMax - 2) * mCharAdvance.y + ImGui::GetCurrentWindow()->InnerClipRect.GetHeight()));
 
     if (mScrollToCursor) {
         EnsureCursorVisible();
@@ -1228,7 +1243,8 @@ void TextEditor::Render(const char *aTitle, const ImVec2 &aSize, bool aBorder) {
 void TextEditor::SetText(const std::string &aText) {
     mLines.resize(1);
     mLines[0].clear();
-    for (auto chr : aText) {
+    std::string text = PreprocessText(aText);
+    for (auto chr : text) {
         if (chr == '\r') {
             // ignore the carriage return character
         } else if (chr == '\n')
@@ -1256,7 +1272,7 @@ void TextEditor::SetTextLines(const std::vector<std::string> &aLines) {
         mLines.resize(aLines.size());
 
         for (size_t i = 0; i < aLines.size(); ++i) {
-            const std::string &aLine = aLines[i];
+            const std::string &aLine = PreprocessText(aLines[i]);
 
             mLines[i].reserve(aLine.size());
             for (size_t j = 0; j < aLine.size(); ++j)
@@ -1546,8 +1562,9 @@ void TextEditor::InsertText(const char *aValue) {
     auto pos       = GetActualCursorCoordinates();
     auto start     = std::min(pos, mState.mSelectionStart);
     int totalLines = pos.mLine - start.mLine;
+    auto text = PreprocessText(aValue);
 
-    totalLines += InsertTextAt(pos, aValue);
+    totalLines += InsertTextAt(pos, text.c_str());
 
     SetSelection(pos, pos);
     SetCursorPosition(pos);
@@ -2008,12 +2025,83 @@ void TextEditor::Cut() {
     }
 }
 
+std::string TextEditor::ReplaceStrings(std::string string, const std::string &search, const std::string &replace) {
+    if (search.empty())
+        return string;
+
+    std::size_t pos = 0;
+    while ((pos = string.find(search, pos)) != std::string::npos) {
+        string.replace(pos, search.size(), replace);
+        pos += replace.size();
+    }
+
+    return string;
+}
+
+std::vector<std::string> TextEditor::SplitString(const std::string &string, const std::string &delimiter, bool removeEmpty) {
+    if (delimiter.empty()) {
+        return { string };
+    }
+
+    std::vector<std::string> result;
+
+    size_t start = 0, end = 0;
+    while ((end = string.find(delimiter, start)) != std::string::npos) {
+        size_t size = end - start;
+        if (start + size > string.length())
+            break;
+
+        auto token = string.substr(start, end - start);
+        start = end + delimiter.length();
+        result.emplace_back(std::move(token));
+    }
+
+    result.emplace_back(string.substr(start));
+
+    if (removeEmpty)
+        std::erase_if(result, [](const auto &string) { return string.empty(); });
+
+    return result;
+}
+
+
+std::string TextEditor::ReplaceTabsWithSpaces(const std::string& string, uint32_t tabSize) {
+    if (tabSize == 0 || string.empty() || string.find('\t') == std::string::npos)
+        return string;
+
+    auto stringVector = SplitString(string, "\n", false);
+    auto size = stringVector.size();
+    std::string result;
+    for (size_t i = 0; i < size - 1; i++) {
+        auto &line = stringVector[i];
+        std::size_t pos = 0;
+        while ((pos = line.find('\t', pos)) != std::string::npos) {
+            auto spaces = tabSize - (pos % tabSize);
+            line.replace(pos, 1, std::string(spaces, ' '));
+            pos += tabSize;
+        }
+        result += line + "\n";
+    }
+    return result;
+}
+
+
+std::string TextEditor::PreprocessText(const std::string &code) {
+    std::string result = ReplaceStrings(code, "\r\n", "\n");
+    result = ReplaceStrings(result, "\r", "\n");
+    result = ReplaceTabsWithSpaces(result, 4);
+
+    return result;
+}
+
 void TextEditor::Paste() {
     if (IsReadOnly())
         return;
 
     auto clipText = ImGui::GetClipboardText();
     if (clipText != nullptr && strlen(clipText) > 0) {
+        std::string text = PreprocessText(clipText);
+
         UndoRecord u;
         u.mBefore = mState;
 
@@ -2024,10 +2112,10 @@ void TextEditor::Paste() {
             DeleteSelection();
         }
 
-        u.mAdded      = clipText;
+        u.mAdded      = text;
         u.mAddedStart = GetActualCursorCoordinates();
 
-        InsertText(clipText);
+        InsertText(text);
 
         u.mAddedEnd = GetActualCursorCoordinates();
         u.mAfter    = mState;
