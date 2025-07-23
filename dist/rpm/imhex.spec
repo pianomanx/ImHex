@@ -1,6 +1,6 @@
 %define source_date_epoch_from_changelog 0
 
-Name:           imhex
+Name:           ImHex
 Version:        VERSION
 Release:        0%{?dist}
 Summary:        A hex editor for reverse engineers and programmers
@@ -10,7 +10,7 @@ License:        GPL-2.0-only AND Zlib AND MIT AND Apache-2.0
 # see license dir for full breakdown
 URL:            https://imhex.werwolv.net/
 # We need the archive with deps bundled
-Source0:        https://github.com/WerWolv/%{name}/releases/download/v%{version}/Full.Sources.tar.gz#/%{name}-%{version}.tar.gz
+Source0:        https://github.com/WerWolv/ImHex/releases/download/v%{version}/Full.Sources.tar.gz#/imhex-%{version}.tar.gz
 
 BuildRequires:  cmake
 BuildRequires:  desktop-file-utils
@@ -103,31 +103,31 @@ CXXFLAGS+=" -std=gnu++23"
 
 %install
 %cmake_install
-desktop-file-validate %{buildroot}%{_datadir}/applications/%{name}.desktop
+desktop-file-validate %{buildroot}%{_datadir}/applications/imhex.desktop
 
 # this is a symlink for the old appdata name that we don't need
-rm -f %{buildroot}%{_metainfodir}/net.werwolv.%{name}.appdata.xml
+rm -f %{buildroot}%{_metainfodir}/net.werwolv.ImHex.appdata.xml
 
 # AppData
-appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/net.werwolv.%{name}.metainfo.xml
+appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/net.werwolv.ImHex.metainfo.xml
 
 # install licenses
-cp -a lib/third_party/nativefiledialog/LICENSE                       %{buildroot}%{_datadir}/licenses/%{name}/nativefiledialog-LICENSE
-cp -a lib/third_party/capstone/LICENSE.TXT                           %{buildroot}%{_datadir}/licenses/%{name}/capstone-LICENSE
-cp -a lib/third_party/capstone/suite/regress/LICENSE                 %{buildroot}%{_datadir}/licenses/%{name}/capstone-regress-LICENSE
-cp -a lib/third_party/microtar/LICENSE                               %{buildroot}%{_datadir}/licenses/%{name}/microtar-LICENSE
-cp -a lib/third_party/xdgpp/LICENSE                                  %{buildroot}%{_datadir}/licenses/%{name}/xdgpp-LICENSE
+cp -a lib/third_party/nativefiledialog/LICENSE                       %{buildroot}%{_datadir}/licenses/imhex/nativefiledialog-LICENSE
+cp -a lib/third_party/capstone/LICENSE.TXT                           %{buildroot}%{_datadir}/licenses/imhex/capstone-LICENSE
+cp -a lib/third_party/capstone/suite/regress/LICENSE                 %{buildroot}%{_datadir}/licenses/imhex/capstone-regress-LICENSE
+cp -a lib/third_party/microtar/LICENSE                               %{buildroot}%{_datadir}/licenses/imhex/microtar-LICENSE
+cp -a lib/third_party/xdgpp/LICENSE                                  %{buildroot}%{_datadir}/licenses/imhex/xdgpp-LICENSE
 
 
 %files
-%license %{_datadir}/licenses/%{name}/
+%license %{_datadir}/licenses/imhex/
 %doc README.md
 %{_bindir}/imhex
 %{_bindir}/imhex-updater
-%{_datadir}/pixmaps/%{name}.svg
-%{_datadir}/applications/%{name}.desktop
-%{_datadir}/mime/packages/%{name}.xml
+%{_datadir}/pixmaps/imhex.svg
+%{_datadir}/applications/imhex.desktop
+%{_datadir}/mime/packages/imhex.xml
 %{_libdir}/libimhex.so*
-%{_libdir}/%{name}/
+%{_libdir}/imhex/
 /usr/lib/debug/%{_libdir}/*.debug
-%{_metainfodir}/net.werwolv.%{name}.metainfo.xml
+%{_metainfodir}/net.werwolv.ImHex.metainfo.xml

@@ -53,7 +53,6 @@
             <caption>Managing bookmarks, diffing two files and decrypting a region of data using the data preprocessor</caption>
         </screenshot>
     </screenshots>
-    <content_rating type="oars-1.1"/>
     <branding>
         <color type="primary" scheme_preference="light">#babec9</color>
         <color type="primary" scheme_preference="dark">#0f0f0f</color>
