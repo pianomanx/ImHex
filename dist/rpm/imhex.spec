@@ -10,7 +10,7 @@ License:        GPL-2.0-only AND Zlib AND MIT AND Apache-2.0
 # see license dir for full breakdown
 URL:            https://imhex.werwolv.net/
 # We need the archive with deps bundled
-Source0:        https://github.com/WerWolv/ImHex/releases/download/v%{version}/Full.Sources.tar.gz#/imhex-%{version}.tar.gz
+Source0:        https://github.com/WerWolv/ImHex/releases/download/v%{version}/Full.Sources.tar.gz#/ImHex-%{version}.tar.gz
 
 BuildRequires:  cmake
 BuildRequires:  desktop-file-utils
@@ -104,9 +104,6 @@ CXXFLAGS+=" -std=gnu++23"
 %install
 %cmake_install
 desktop-file-validate %{buildroot}%{_datadir}/applications/imhex.desktop
-
-# this is a symlink for the old appdata name that we don't need
-rm -f %{buildroot}%{_metainfodir}/net.werwolv.ImHex.appdata.xml
 
 # AppData
 appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/net.werwolv.ImHex.metainfo.xml
