@@ -10,7 +10,7 @@ License:        GPL-2.0-only AND Zlib AND MIT AND Apache-2.0
 # see license dir for full breakdown
 URL:            https://imhex.werwolv.net/
 # We need the archive with deps bundled
-Source0:        https://github.com/WerWolv/ImHex/releases/download/v%{version}/Full.Sources.tar.gz#/imhex-%{version}.tar.gz
+Source0:        https://github.com/WerWolv/ImHex/releases/download/v%{version}/Full.Sources.tar.gz#/%{name}-%{version}.tar.gz
 
 BuildRequires:  cmake
 BuildRequires:  desktop-file-utils
