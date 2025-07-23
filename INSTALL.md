@@ -95,7 +95,7 @@ ImHex is also available on various package managers. The officially supported on
   - [imhex](https://src.fedoraproject.org/rpms/imhex/) (Thanks to @jonathanspw)
     - `dnf install imhex`
 - **Flatpak**
-  - [net.werwolv.Imhex](https://flathub.org/apps/details/net.werwolv.ImHex) (Thanks to @Mailaender)
+  - [net.werwolv.ImHex](https://flathub.org/apps/details/net.werwolv.ImHex) (Thanks to @Mailaender)
     - `flatpak install flathub net.werwolv.ImHex`
 
 ### Available on other package managers
